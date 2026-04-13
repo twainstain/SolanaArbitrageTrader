@@ -98,8 +98,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <tbody></tbody>
     </table>
 
-    <!-- Recent Opportunities (sorted by spread, winners first) -->
-    <h2>Recent Opportunities</h2>
+    <!-- Recent Opportunities (filtered by selected time window) -->
+    <h2 id="opp-header">Recent Opportunities</h2>
     <table id="opp-table">
         <thead><tr>
             <th>ID</th><th>Pair</th><th>Chain</th><th>Buy</th><th>Sell</th>
@@ -252,12 +252,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     function sortChains(field) { chainSortField = field; renderChains(); }
 
     async function loadOpportunities() {
-        oppData = await fetchJSON('/opportunities?limit=50');
-        if (selectedChain) oppData = oppData.filter(o => o.chain === selectedChain);
+        // Filter by current time window AND chain selection.
+        let url = '/opportunities?limit=50&window=' + currentWindow;
+        if (selectedChain) url += '&chain=' + selectedChain;
+        oppData = await fetchJSON(url);
         renderOpps();
     }
 
     function renderOpps() {
+        // Update header to show current window + count.
+        const chainLabel = selectedChain ? ' (' + selectedChain + ')' : '';
+        document.getElementById('opp-header').textContent =
+            'Opportunities (' + currentWindow + chainLabel + ') — ' + oppData.length + ' found';
+
         let data = [...oppData];
         // Default: winners first (approved/included before rejected), then by spread desc
         if (oppSortField === 'spread') {
@@ -330,7 +337,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         }).join('') + '</div>';
     }
 
-    function setWindow(w) { currentWindow = w; loadWindows(); }
+    function setWindow(w) { currentWindow = w; loadWindows(); loadOpportunities(); loadBarChart(); }
 
     async function init() {
         await loadChainFilter();

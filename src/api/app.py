@@ -141,8 +141,25 @@ def create_app(
     # --- Opportunities ---
 
     @app.get("/opportunities")
-    def get_opportunities(limit: int = 50):
+    def get_opportunities(limit: int = 50, window: Optional[str] = None,
+                          chain: Optional[str] = None):
+        """Get recent opportunities, optionally filtered by time window and chain."""
         repo = _get_repo()
+        if window:
+            from observability.time_windows import WINDOWS
+            from datetime import datetime, timedelta, timezone
+            td = WINDOWS.get(window)
+            if td:
+                since = (datetime.now(timezone.utc) - td).isoformat()
+                query = "SELECT * FROM opportunities WHERE detected_at >= ?"
+                params = [since]
+                if chain:
+                    query += " AND chain = ?"
+                    params.append(chain)
+                query += " ORDER BY detected_at DESC LIMIT ?"
+                params.append(limit)
+                rows = repo.conn.execute(query, tuple(params)).fetchall()
+                return [dict(r) for r in rows]
         return repo.get_recent_opportunities(limit=limit)
 
     @app.get("/opportunities/{opp_id}")

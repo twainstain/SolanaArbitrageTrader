@@ -1,0 +1,106 @@
+Metadata-Version: 2.1
+Name: arbitrage-bot-repro
+Version: 0.1.0
+Summary: Runnable Python example of a crypto arbitrage bot with a local market simulator.
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+
+# Python Crypto Arbitrage Bot Repro
+
+This repo contains a full Python example of a crypto arbitrage bot inspired by the video notes in this project. It is intentionally split into the same parts you would use in a real system:
+
+- market data ingestion
+- opportunity detection
+- risk-adjusted profit checks
+- execution
+- reporting
+
+The important difference is that this example is fully reproducible offline. Instead of touching real DEX contracts, it uses a local simulator so you can run it, inspect the logic, and extend it safely.
+
+## What This Example Includes
+
+- a local market simulator with two DEXs and configurable prices
+- an arbitrage strategy that compares routes and computes net profit
+- an execution layer with slippage and gas assumptions
+- a CLI bot loop
+- tests for the core profitability logic
+
+## Project Layout
+
+```text
+src/arbitrage_bot/
+  config.py
+  models.py
+  market.py
+  strategy.py
+  executor.py
+  bot.py
+  main.py
+config/
+  example_config.json
+tests/
+  test_strategy.py
+  test_bot.py
+```
+
+## Quick Start
+
+Use Python 3.11+.
+
+```bash
+cd /Users/tamir.wainstain/src/ArbitrageTrader
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+python -m arbitrage_bot.main --config config/example_config.json --iterations 5
+```
+
+## Example Output
+
+```text
+[scan 1] no opportunity
+[scan 2] buy on SushiSim, sell on UniSim, size=1.5000 ETH, expected net=0.017217 ETH
+[exec 2] executed successfully, realized profit=0.017217 ETH
+```
+
+## How The Logic Works
+
+For each scan cycle the bot:
+
+1. fetches quotes for the configured pair from each simulated DEX
+2. finds the cheapest venue to buy the base asset
+3. finds the best venue to sell the base asset
+4. subtracts fees, slippage, flash-loan fee, and gas assumptions
+5. executes only if the estimated net profit exceeds `min_profit_base`
+
+## Configuration
+
+The example config controls:
+
+- trading pair
+- trade size
+- per-DEX fee assumptions
+- gas cost assumptions
+- flash-loan fee assumptions
+- slippage buffer
+- random spread behavior in the simulator
+
+You can tweak the prices and rerun the bot to see how sensitive profitability is.
+
+## Mapping This To A Real Bot
+
+To turn this into a real on-chain system, the replacement path would be:
+
+- replace `SimulatedMarket` with on-chain quote adapters
+- replace `PaperExecutor` with a Web3 transaction sender
+- move flash-loan logic into a smart contract
+- add transaction simulation against a fork or node
+- add nonce management, mempool awareness, and MEV protections
+
+That means this repo is a good engineering starting point, but not a production arbitrage system on its own.
+
+## Notes
+
+- The example uses only the Python standard library.
+- Profitability in production is much harder than it looks in tutorials.
+- This scaffold is designed for learning, testing, and further extension.

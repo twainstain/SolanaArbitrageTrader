@@ -123,28 +123,56 @@ def main() -> None:
                 time.sleep(args.sleep)
             continue
 
-        # Run scanner.
+        # Run scanner — get ALL opportunities, not just the best.
         result = scanner.scan_and_rank(quotes)
 
-        if result.best is None:
+        if not result.opportunities:
             logger.info("No opportunity (evaluated %d candidates, rejected %d)",
-                        len(result.opportunities) + result.rejected_count,
-                        result.rejected_count)
+                        result.rejected_count, result.rejected_count)
             if i < args.iterations:
                 time.sleep(args.sleep)
             continue
 
-        # Feed through pipeline (persists to DB → shows on dashboard).
+        # In on-chain mode, also find best same-chain opportunities per chain.
+        # Group quotes by chain, find same-chain spreads.
+        chain_map: dict[str, list] = {}
+        for q in quotes:
+            # Extract chain from DEX name (e.g., "Uniswap-Ethereum" → "ethereum")
+            parts = q.dex.rsplit("-", 1)
+            ch = parts[1].lower() if len(parts) == 2 else ""
+            if ch:
+                chain_map.setdefault(ch, []).append(q)
+
+        # Process same-chain opportunities per chain.
+        processed_chains = set()
+        from strategy import ArbitrageStrategy
+        chain_strategy = ArbitrageStrategy(config)
+
+        for chain_name, chain_quotes in chain_map.items():
+            if len(chain_quotes) < 2:
+                continue
+            chain_opp = chain_strategy.find_best_opportunity(chain_quotes)
+            if chain_opp is not None:
+                processed_chains.add(chain_name)
+                logger.info(
+                    "Same-chain [%s]: %s buy=%s sell=%s spread=%.4f%% net=%.6f",
+                    chain_name, chain_opp.pair, chain_opp.buy_dex, chain_opp.sell_dex,
+                    float(chain_opp.gross_spread_pct), float(chain_opp.net_profit_base),
+                )
+                pipeline.process(chain_opp)
+
+        # Also process the overall best (may be cross-chain).
         opp = result.best
         logger.info(
-            "Opportunity: %s buy=%s sell=%s spread=%.4f%% net=%.6f",
+            "Best overall: %s buy=%s sell=%s spread=%.4f%% net=%.6f",
             opp.pair, opp.buy_dex, opp.sell_dex,
             float(opp.gross_spread_pct), float(opp.net_profit_base),
         )
-
         pipeline_result = pipeline.process(opp)
         logger.info("Pipeline result: %s — %s", pipeline_result.final_status, pipeline_result.reason)
         metrics.record_expected_profit(float(opp.net_profit_base))
+
+        logger.info("Processed %d same-chain + 1 overall opportunity", len(processed_chains))
 
         # Smart alerting: Telegram for big wins (>5%), hourly email otherwise.
         alerter.check_opportunity(

@@ -233,17 +233,20 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         else data.sort((a,b) => b.total - a.total);
 
         const tbody = document.querySelector('#chain-table tbody');
-        tbody.innerHTML = data.map(c => {
-            const approved = (c.funnel.approved||0) + (c.funnel.included||0) + (c.funnel.dry_run||0);
-            const rejected = c.funnel.rejected || 0;
-            return `
-            <tr>
-                <td><b>${c.chain}</b></td>
-                <td>${c.total}</td>
-                <td style="color:#3fb950">${approved}</td>
-                <td style="color:#f85149">${rejected}</td>
-            </tr>`;
-        }).join('');
+        let rows = '';
+        for (const c of data) {
+            const f = c.funnel || {};
+            const total = c.total || 0;
+            const approved = (f.approved||0) + (f.included||0) + (f.dry_run||0);
+            const rejected = f.rejected || 0;
+            rows += '<tr>';
+            rows += '<td><b>' + c.chain + '</b></td>';
+            rows += '<td>' + total + '</td>';
+            rows += '<td style="color:#3fb950">' + approved + '</td>';
+            rows += '<td style="color:#f85149">' + rejected + '</td>';
+            rows += '</tr>';
+        }
+        tbody.innerHTML = rows;
     }
 
     function sortChains(field) { chainSortField = field; renderChains(); }

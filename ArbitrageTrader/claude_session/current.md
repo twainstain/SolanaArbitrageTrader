@@ -2,27 +2,41 @@
 
 ## Session: 2026-04-13
 
-### What Was Done
+### Summary
 
-Completed Phase 4 production hardening + dashboard. 403 tests pass.
+Production-grade DEX arbitrage trading system. 422 tests. 6 EVM chains live.
 
-**New this round:**
+### Live On-Chain Scanning — 6 Chains
 
-| Module | What | Tests |
-|--------|------|-------|
-| src/risk/circuit_breaker.py | Auto-pause: reverts, stale data, RPC degradation, block window | 13 |
-| src/risk/retry.py | Bounded retry with re-evaluation + config hashing | 8 |
-| src/data/rpc_failover.py | Multi-RPC per chain with auto-failover | 7 |
-| src/persistence/ (updated) | pairs + pools tables, pair/pool CRUD | 5 |
-| src/pipeline/queue.py | Priority candidate queue with back-pressure | 9 |
-| src/api/ (updated) | Pause endpoint, replay endpoint, dashboard, time-windows | 13 |
-| src/observability/time_windows.py | 15m→1m windowed aggregation, per-chain breakdown | (via API) |
-| src/api/dashboard.py | HTML dashboard with live data + tabs | (via API) |
-| contracts.py (updated) | 12 chains: all top DeFi Llama EVM chains | -- |
-| env.py (updated) | RPC overrides for all 12 chains | -- |
+| Chain | DEXs | Status |
+|---|---|---|
+| Ethereum | Uniswap V3 + SushiSwap V3 | Working |
+| Arbitrum | Uniswap V3 + SushiSwap V3 | Working |
+| Base | Uniswap V3 + SushiSwap V3 | Working |
+| Polygon | Uniswap V3 (Sushi filtered) | Working |
+| Optimism | Uniswap V3 + SushiSwap V3 | Working — best spreads (~11%) |
+| Avalanche | Uniswap V3 (Sushi not deployed) | Working |
 
-### Architecture Doc — Fully Implemented
+### Architecture Modules
 
-All Phase 1-4 items complete. Phase 5 (triangular arb, mempool, backrun) intentionally deferred.
+| Module | Status |
+|---|---|
+| On-chain quoters (multi-fee-tier, per-chain) | Done |
+| Persistence (SQLite + Postgres) | Done |
+| Risk engine (9 rules + circuit breaker) | Done |
+| Candidate pipeline (6-stage lifecycle) | Done |
+| API control plane (FastAPI + auth) | Done |
+| Dashboard (HTML, chain filter, bar chart, detail pages) | Done |
+| Alerting (Telegram >5%, Discord, Gmail hourly) | Done |
+| RPC failover (3 backup endpoints per chain) | Done |
+| Pair discovery (DexScreener volume ranking) | Done |
+| Outlier filter, Decimal math, Flashbots | Done |
 
-### Test Count: 403
+### Not Yet Working
+
+- BSC: needs WBNB/USDT pair (not WETH/USDC)
+- Mantle: no Uniswap V3 deployment
+- Polygon Sushi: returns $0.74 (filtered by sanity check)
+- Avalanche Sushi: quoter address not deployed
+
+### Test Count: 422

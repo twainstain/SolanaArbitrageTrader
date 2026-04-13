@@ -143,24 +143,39 @@ def create_app(
     @app.get("/opportunities")
     def get_opportunities(limit: int = 50, window: Optional[str] = None,
                           chain: Optional[str] = None):
-        """Get recent opportunities, optionally filtered by time window and chain."""
+        """Get recent opportunities with net_profit from pricing, filtered by time window/chain."""
         repo = _get_repo()
+
+        # Join opportunities with pricing to get net_profit in one query.
+        query = """
+            SELECT o.*, p.expected_net_profit, p.fee_cost, p.slippage_cost, p.gas_estimate
+            FROM opportunities o
+            LEFT JOIN pricing_results p ON o.opportunity_id = p.opportunity_id
+        """
+        params = []
+        conditions = []
+
         if window:
             from observability.time_windows import WINDOWS
             from datetime import datetime, timedelta, timezone
             td = WINDOWS.get(window)
             if td:
                 since = (datetime.now(timezone.utc) - td).isoformat()
-                query = "SELECT * FROM opportunities WHERE detected_at >= ?"
-                params = [since]
-                if chain:
-                    query += " AND chain = ?"
-                    params.append(chain)
-                query += " ORDER BY detected_at DESC LIMIT ?"
-                params.append(limit)
-                rows = repo.conn.execute(query, tuple(params)).fetchall()
-                return [dict(r) for r in rows]
-        return repo.get_recent_opportunities(limit=limit)
+                conditions.append("o.detected_at >= ?")
+                params.append(since)
+
+        if chain:
+            conditions.append("o.chain = ?")
+            params.append(chain)
+
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+
+        query += " ORDER BY o.detected_at DESC LIMIT ?"
+        params.append(limit)
+
+        rows = repo.conn.execute(query, tuple(params)).fetchall()
+        return [dict(r) for r in rows]
 
     @app.get("/opportunities/{opp_id}")
     def get_opportunity(opp_id: str):

@@ -104,6 +104,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <thead><tr>
             <th>ID</th><th>Pair</th><th>Chain</th><th>Buy</th><th>Sell</th>
             <th onclick="sortOpps('spread')">Spread</th>
+            <th onclick="sortOpps('profit')">Net Profit</th>
             <th onclick="sortOpps('status')">Status</th>
             <th onclick="sortOpps('time')">Time</th>
         </tr></thead>
@@ -280,12 +281,23 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 const bw = isWin(b.status) ? 1 : 0;
                 return bw - aw;
             });
+        } else if (oppSortField === 'profit') {
+            data.sort((a,b) => {
+                const ap = Number(a.expected_net_profit || 0);
+                const bp = Number(b.expected_net_profit || 0);
+                return bp - ap;
+            });
         } else if (oppSortField === 'time') {
             data.sort((a,b) => b.detected_at.localeCompare(a.detected_at));
         }
 
         const tbody = document.querySelector('#opp-table tbody');
-        tbody.innerHTML = data.slice(0, 30).map(o => `
+        tbody.innerHTML = data.slice(0, 30).map(o => {
+            // Net profit in WETH and approx USD.
+            const profitWeth = o.expected_net_profit ? Number(o.expected_net_profit) : 0;
+            const profitUsd = (profitWeth * 2220).toFixed(2);
+            const profitColor = profitWeth > 0 ? '#3fb950' : '#f85149';
+            return `
             <tr>
                 <td><a href="${API_BASE}/opportunity/${o.opportunity_id}" style="color:#58a6ff">${o.opportunity_id.slice(4,16)}</a></td>
                 <td>${o.pair}</td>
@@ -293,10 +305,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 <td>${o.buy_dex}</td>
                 <td>${o.sell_dex}</td>
                 <td>${Number(o.spread_bps).toFixed(2)}%</td>
+                <td style="color:${profitColor};font-weight:bold">$${profitUsd}</td>
                 <td><span class="tag ${tagClass(o.status)}">${o.status}</span></td>
                 <td>${o.detected_at.slice(11,19)}</td>
-            </tr>
-        `).join('');
+            </tr>`;
+        }).join('');
     }
 
     function sortOpps(field) { oppSortField = field; renderOpps(); }

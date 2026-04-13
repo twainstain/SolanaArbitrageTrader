@@ -244,8 +244,10 @@ class OnChainMarketBalancerTests(unittest.TestCase):
         ocm.Web3 = MagicMock()
         ocm.Web3.to_checksum_address = lambda x: x
         try:
-            with self.assertRaises(OnChainMarketError, msg="No Balancer pool ID"):
-                market.get_quotes()
+            # Missing Balancer pool should be skipped, not crash.
+            quotes = market.get_quotes()
+            # Balancer skipped, only Uniswap quote returned.
+            self.assertEqual(len(quotes), 1)
         finally:
             ocm.Web3 = original_web3
 
@@ -293,8 +295,10 @@ class OnChainMarketSushiTests(unittest.TestCase):
         # Remove base from sushi registry
         ocm.SUSHI_V3_QUOTER.pop("base", None)
         try:
-            with self.assertRaises(OnChainMarketError, msg="No SushiSwap V3 quoter"):
-                market.get_quotes()
+            # Missing Sushi quoter should be skipped, not crash.
+            quotes = market.get_quotes()
+            # Sushi skipped, only Uniswap quote returned.
+            self.assertEqual(len(quotes), 1)
         finally:
             ocm.Web3 = original_web3
             ocm.SUSHI_V3_QUOTER.update(original_sushi)

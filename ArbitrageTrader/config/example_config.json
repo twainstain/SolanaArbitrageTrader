@@ -1,0 +1,36 @@
+{
+  "pair": "WETH/USDC",
+  "base_asset": "WETH",
+  "quote_asset": "USDC",
+  "trade_size": 1.5,
+  "min_profit_base": 0.008,
+  "estimated_gas_cost_base": 0.002,
+  "flash_loan_fee_bps": 9.0,
+  "flash_loan_provider": "aave_v3",
+  "slippage_bps": 15.0,
+  "poll_interval_seconds": 0.5,
+  "extra_pairs": [
+    { "pair": "WETH/USDT", "base_asset": "WETH", "quote_asset": "USDT", "trade_size": 1.5 },
+    { "pair": "WBTC/USDC", "base_asset": "WBTC", "quote_asset": "USDC", "trade_size": 0.05 }
+  ],
+  "dexes": [
+    {
+      "name": "UniswapSim",
+      "base_price": 3008.0,
+      "fee_bps": 30.0,
+      "volatility_bps": 18.0
+    },
+    {
+      "name": "SushiSim",
+      "base_price": 3092.0,
+      "fee_bps": 30.0,
+      "volatility_bps": 22.0
+    },
+    {
+      "name": "BalancerSim",
+      "base_price": 3045.0,
+      "fee_bps": 25.0,
+      "volatility_bps": 15.0
+    }
+  ]
+}

@@ -21,6 +21,8 @@ from decimal import Decimal
 from web3 import Web3
 
 from config import BotConfig
+import logging
+
 from contracts import (
     BALANCER_POOL_IDS,
     BALANCER_VAULT,
@@ -35,6 +37,18 @@ from contracts import (
     UNISWAP_V3_QUOTER_PER_CHAIN,
     UNISWAP_V3_QUOTER_V2,
 )
+
+_logger = logging.getLogger(__name__)
+
+# Backup public RPCs for failover (free, rate-limited).
+BACKUP_RPC_URLS: dict[str, list[str]] = {
+    "ethereum": ["https://eth.llamarpc.com", "https://rpc.ankr.com/eth", "https://1rpc.io/eth"],
+    "arbitrum": ["https://arb1.arbitrum.io/rpc", "https://rpc.ankr.com/arbitrum", "https://1rpc.io/arb"],
+    "base": ["https://mainnet.base.org", "https://base.llamarpc.com", "https://1rpc.io/base"],
+    "polygon": ["https://polygon-rpc.com", "https://rpc.ankr.com/polygon", "https://1rpc.io/matic"],
+    "optimism": ["https://mainnet.optimism.io", "https://rpc.ankr.com/optimism", "https://1rpc.io/op"],
+    "bsc": ["https://bsc-dataseed.binance.org", "https://bsc-dataseed1.defibit.io"],
+}
 from models import BPS_DIVISOR, MarketQuote
 from tokens import CHAIN_TOKENS
 
@@ -82,8 +96,11 @@ class OnChainMarket:
         self.config = config
         self._rpc_overrides = rpc_overrides or {}
 
-        # Pre-build web3 instances keyed by chain.
+        # Pre-build web3 instances keyed by chain, with failover URLs.
         self._w3: dict[str, Web3] = {}
+        self._rpc_urls: dict[str, list[str]] = {}  # chain → list of URLs for failover
+        self._rpc_index: dict[str, int] = {}  # chain → current URL index
+
         for dex in config.dexes:
             chain = dex.chain
             if chain is None:
@@ -106,8 +123,28 @@ class OnChainMarket:
                     f"Supported: {SUPPORTED_DEX_TYPES}."
                 )
             if chain not in self._w3:
-                rpc_url = self._rpc_overrides.get(chain, PUBLIC_RPC_URLS[chain])
-                self._w3[chain] = Web3(Web3.HTTPProvider(rpc_url))
+                # Build URL list: override first, then backups.
+                urls = []
+                override = self._rpc_overrides.get(chain)
+                if override:
+                    urls.append(override)
+                urls.extend(BACKUP_RPC_URLS.get(chain, []))
+                if not urls:
+                    urls.append(PUBLIC_RPC_URLS[chain])
+                self._rpc_urls[chain] = urls
+                self._rpc_index[chain] = 0
+                self._w3[chain] = Web3(Web3.HTTPProvider(urls[0]))
+
+    def _rotate_rpc(self, chain: str) -> None:
+        """Rotate to the next RPC endpoint for a chain after a failure."""
+        urls = self._rpc_urls.get(chain, [])
+        if len(urls) <= 1:
+            return
+        idx = (self._rpc_index.get(chain, 0) + 1) % len(urls)
+        self._rpc_index[chain] = idx
+        new_url = urls[idx]
+        self._w3[chain] = Web3(Web3.HTTPProvider(new_url))
+        _logger.info("RPC failover for %s → %s", chain, new_url[:50])
 
     # ------------------------------------------------------------------
     # Public interface
@@ -133,16 +170,25 @@ class OnChainMarket:
                     f"Cannot resolve {self.config.pair} token addresses on {chain}."
                 )
 
-            if dex_type == "uniswap_v3":
-                mid = self._quote_uniswap_v3(chain, base_addr, quote_addr)
-            elif dex_type == "sushi_v3":
-                mid = self._quote_sushi_v3(chain, base_addr, quote_addr)
-            elif dex_type == "pancakeswap_v3":
-                mid = self._quote_pancakeswap_v3(chain, base_addr, quote_addr)
-            elif dex_type == "balancer_v2":
-                mid = self._quote_balancer_v2(chain, base_addr, quote_addr)
-            else:
+            def _do_quote() -> Decimal:
+                if dex_type == "uniswap_v3":
+                    return self._quote_uniswap_v3(chain, base_addr, quote_addr)
+                elif dex_type == "sushi_v3":
+                    return self._quote_sushi_v3(chain, base_addr, quote_addr)
+                elif dex_type == "pancakeswap_v3":
+                    return self._quote_pancakeswap_v3(chain, base_addr, quote_addr)
+                elif dex_type == "balancer_v2":
+                    return self._quote_balancer_v2(chain, base_addr, quote_addr)
                 raise OnChainMarketError(f"Unknown dex_type: {dex_type}")
+
+            # Try once, on RPC failure rotate and retry once.
+            try:
+                mid = _do_quote()
+            except OnChainMarketError:
+                raise
+            except Exception:
+                self._rotate_rpc(chain)
+                mid = _do_quote()
 
             mid = _validate_price(mid, dex.name, chain)  # type: ignore[union-attr]
 
@@ -156,21 +202,21 @@ class OnChainMarket:
             )
 
         # Fetch all DEX quotes in parallel.
+        # Failed DEXs are logged and skipped — one bad RPC shouldn't kill the scan.
         quotes: list[MarketQuote] = []
-        errors: list[Exception] = []
 
         with ThreadPoolExecutor(max_workers=len(self.config.dexes)) as pool:
             futures = {pool.submit(_fetch_one, dex): dex for dex in self.config.dexes}
             for future in as_completed(futures):
+                dex = futures[future]
                 try:
                     quotes.append(future.result())
-                except OnChainMarketError:
-                    raise
                 except Exception as exc:
-                    dex = futures[future]
-                    raise OnChainMarketError(
-                        f"RPC call failed for {dex.name} on {dex.chain}: {exc}"  # type: ignore[union-attr]
-                    ) from exc
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "Skipping %s on %s: %s",
+                        dex.name, dex.chain, exc,  # type: ignore[union-attr]
+                    )
 
         return quotes
 

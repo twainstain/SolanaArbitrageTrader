@@ -1,0 +1,30 @@
+{
+  "pair": "WETH/USDC",
+  "base_asset": "WETH",
+  "quote_asset": "USDC",
+  "trade_size": 1.0,
+  "min_profit_base": 0.001,
+  "estimated_gas_cost_base": 0.002,
+  "flash_loan_fee_bps": 9.0,
+  "flash_loan_provider": "aave_v3",
+  "slippage_bps": 15.0,
+  "poll_interval_seconds": 0.0,
+  "dexes": [
+    {
+      "name": "Uniswap",
+      "base_price": 0,
+      "fee_bps": 5.0,
+      "volatility_bps": 0,
+      "chain": "ethereum",
+      "dex_type": "uniswap_v3"
+    },
+    {
+      "name": "Sushi",
+      "base_price": 0,
+      "fee_bps": 30.0,
+      "volatility_bps": 0,
+      "chain": "ethereum",
+      "dex_type": "sushi_v3"
+    }
+  ]
+}

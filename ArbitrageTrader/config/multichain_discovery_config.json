@@ -41,16 +41,6 @@
       "chain": "base", "dex_type": "sushi_v3"
     },
     {
-      "name": "PancakeSwap-BSC",
-      "base_price": 0, "fee_bps": 25.0, "volatility_bps": 0,
-      "chain": "bsc", "dex_type": "pancakeswap_v3"
-    },
-    {
-      "name": "Uniswap-BSC",
-      "base_price": 0, "fee_bps": 5.0, "volatility_bps": 0,
-      "chain": "bsc", "dex_type": "uniswap_v3"
-    },
-    {
       "name": "Uniswap-Polygon",
       "base_price": 0, "fee_bps": 5.0, "volatility_bps": 0,
       "chain": "polygon", "dex_type": "uniswap_v3"
@@ -74,6 +64,11 @@
       "name": "Uniswap-Avalanche",
       "base_price": 0, "fee_bps": 5.0, "volatility_bps": 0,
       "chain": "avax", "dex_type": "uniswap_v3"
+    },
+    {
+      "name": "Sushi-Avalanche",
+      "base_price": 0, "fee_bps": 30.0, "volatility_bps": 0,
+      "chain": "avax", "dex_type": "sushi_v3"
     }
   ]
 }

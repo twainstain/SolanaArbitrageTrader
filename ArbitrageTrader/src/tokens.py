@@ -46,9 +46,9 @@ CHAIN_TOKENS: dict[str, TokenAddresses] = {
     ),
     "polygon": TokenAddresses(
         weth="0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619",
-        # Use USDC.e (bridged) — this is what Uniswap V3 pools on Polygon use.
-        # Native USDC (0x3c499...) has very little V3 liquidity.
-        usdc="0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+        # Native USDC — Polygon migrated from USDC.e to native in 2023.
+        # Uniswap V3 pools have moved to native USDC.
+        usdc="0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
         usdt="0xc2132D05D31c914a87C6611C10748AEb04B58e8F",
         wbtc="0x1BFD67037B42Cf73acF2047067bd4F2C47D9BfD6",
     ),

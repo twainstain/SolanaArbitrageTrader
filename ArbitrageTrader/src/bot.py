@@ -196,7 +196,7 @@ class ArbitrageBot:
                         )
                         self.dispatcher.trade_executed(
                             pair=opportunity.pair,
-                            tx_hash=result.tx_hash or "paper",
+                            tx_hash=getattr(result, "tx_hash", "") or "paper",
                             profit=float(result.realized_profit_base),
                         )
                     else:

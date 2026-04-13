@@ -45,7 +45,7 @@ BACKUP_RPC_URLS: dict[str, list[str]] = {
     "ethereum": ["https://eth.llamarpc.com", "https://rpc.ankr.com/eth", "https://1rpc.io/eth"],
     "arbitrum": ["https://arb1.arbitrum.io/rpc", "https://rpc.ankr.com/arbitrum", "https://1rpc.io/arb"],
     "base": ["https://mainnet.base.org", "https://base.llamarpc.com", "https://1rpc.io/base"],
-    "polygon": ["https://polygon-rpc.com", "https://rpc.ankr.com/polygon", "https://1rpc.io/matic"],
+    "polygon": ["https://1rpc.io/matic", "https://polygon-bor-rpc.publicnode.com", "https://polygon.drpc.org"],
     "optimism": ["https://mainnet.optimism.io", "https://rpc.ankr.com/optimism", "https://1rpc.io/op"],
     "bsc": ["https://bsc-dataseed.binance.org", "https://bsc-dataseed1.defibit.io"],
 }

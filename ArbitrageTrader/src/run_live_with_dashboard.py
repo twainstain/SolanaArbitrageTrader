@@ -84,8 +84,8 @@ def main() -> None:
         min_net_profit=0,  # capture all opportunities for dashboard visibility
     )
 
-    # --- Pipeline ---
-    pipeline = CandidatePipeline(repo=repo, risk_policy=risk_policy)
+    # --- Pipeline (dispatcher wired after alerting init below) ---
+    pipeline = None  # initialized after dispatcher
 
     # --- Alerting: full dispatcher + smart rules ---
     from alerting.dispatcher import AlertDispatcher
@@ -114,6 +114,9 @@ def main() -> None:
     dashboard_url = f"http://localhost:{args.port}/dashboard"
     alerter = SmartAlerter(repo=repo, telegram=telegram, gmail=gmail, dashboard_url=dashboard_url)
     alerter.start_background_hourly()
+
+    # --- Pipeline (with dispatcher for alerts on reverts/failures) ---
+    pipeline = CandidatePipeline(repo=repo, risk_policy=risk_policy, dispatcher=dispatcher)
 
     # --- Dashboard ---
     app = create_app(risk_policy=risk_policy, repo=repo, metrics=metrics)

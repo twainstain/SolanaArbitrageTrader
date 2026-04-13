@@ -68,6 +68,7 @@ SUSHI_V3_QUOTER: dict[str, str] = {
     "base": "0xb1E835Dc2785b52265711e17fCCb0fd018226a6e",
     "polygon": "0xb1E835Dc2785b52265711e17fCCb0fd018226a6e",
     "optimism": "0xb1E835Dc2785b52265711e17fCCb0fd018226a6e",
+    "avax": "0xb1E835Dc2785b52265711e17fCCb0fd018226a6e",
 }
 
 # Sushi V3 uses the same ABI as Uniswap V3 QuoterV2.
@@ -142,7 +143,7 @@ PUBLIC_RPC_URLS: dict[str, str] = {
     "arbitrum": "https://arb1.arbitrum.io/rpc",
     "base": "https://mainnet.base.org",
     "bsc": "https://bsc-dataseed.binance.org",
-    "polygon": "https://polygon-rpc.com",
+    "polygon": "https://1rpc.io/matic",
     "optimism": "https://mainnet.optimism.io",
     "avax": "https://api.avax.network/ext/bc/C/rpc",
     "fantom": "https://rpcapi.fantom.network",

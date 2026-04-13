@@ -182,14 +182,23 @@ class CandidatePipeline:
                 if included and not reverted:
                     self.repo.update_opportunity_status(opp_id, "included")
                     logger.info("[pipeline] %s included: profit=%.6f", opp_id, float(actual_profit))
+                    self.dispatcher.trade_executed(
+                        pair=opportunity.pair, tx_hash=tx_hash,
+                        profit=float(actual_profit))
                     return PipelineResult(opp_id, "included", "success", actual_profit)
                 elif reverted:
                     self.repo.update_opportunity_status(opp_id, "reverted")
                     logger.info("[pipeline] %s reverted", opp_id)
+                    self.dispatcher.trade_reverted(
+                        pair=opportunity.pair, tx_hash=tx_hash,
+                        reason="tx_reverted")
                     return PipelineResult(opp_id, "reverted", "tx_reverted")
                 else:
                     self.repo.update_opportunity_status(opp_id, "not_included")
                     logger.info("[pipeline] %s not included", opp_id)
+                    self.dispatcher.alert("trade_not_included",
+                        f"Trade not included: {opportunity.pair}\nBundle expired",
+                        {"pair": opportunity.pair, "tx_hash": tx_hash})
                     return PipelineResult(opp_id, "not_included", "bundle_expired")
 
             return PipelineResult(opp_id, "submitted", "awaiting_verification")

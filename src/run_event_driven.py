@@ -407,6 +407,10 @@ def main() -> None:
         poll_interval=args.poll_interval,
     )
 
+    # Register scanner with API so it can be controlled via /scanner/start|stop.
+    from api.app import set_scanner_ref
+    set_scanner_ref(event_scanner)
+
     # Graceful shutdown.
     def _shutdown(sig, frame):
         logger.info("Shutting down (signal %d)...", sig)

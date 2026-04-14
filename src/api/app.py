@@ -37,6 +37,7 @@ _risk_policy = RiskPolicy()
 _repo: Repository | None = None
 _metrics = MetricsCollector()
 _paused = False  # soft pause: stops new scans but lets in-flight trades complete
+_scanner_ref = None  # reference to EventDrivenScanner for start/stop via API
 
 # Basic auth credentials — from env or defaults for testing.
 DASHBOARD_USER = os.environ.get("DASHBOARD_USER", "admin")
@@ -64,6 +65,12 @@ def _get_repo() -> Repository:
         conn = init_db()
         _repo = Repository(conn)
     return _repo
+
+
+def set_scanner_ref(scanner: object) -> None:
+    """Set a reference to the EventDrivenScanner for API control."""
+    global _scanner_ref
+    _scanner_ref = scanner
 
 
 def create_app(
@@ -131,6 +138,41 @@ def create_app(
         global _paused
         _paused = bool(body.get("paused", False))
         return {"paused": _paused}
+
+    # --- Scanner Control (start/stop/status) ---
+
+    @app.get("/scanner")
+    def get_scanner_status():
+        """Get the current scanner status."""
+        if _scanner_ref is None:
+            return {"status": "not_configured", "running": False}
+        running = getattr(_scanner_ref, '_running', False)
+        return {
+            "status": "running" if running else "stopped",
+            "running": running,
+            "paused": _paused,
+            "execution_enabled": _risk_policy.execution_enabled,
+        }
+
+    @app.post("/scanner/start")
+    def start_scanner():
+        """Start the scanner in a background thread."""
+        if _scanner_ref is None:
+            raise HTTPException(status_code=400, detail="Scanner not configured")
+        if getattr(_scanner_ref, '_running', False):
+            return {"status": "already_running"}
+        import threading
+        t = threading.Thread(target=_scanner_ref.run, daemon=True, name="scanner-api")
+        t.start()
+        return {"status": "started"}
+
+    @app.post("/scanner/stop")
+    def stop_scanner():
+        """Stop the scanner gracefully."""
+        if _scanner_ref is None:
+            raise HTTPException(status_code=400, detail="Scanner not configured")
+        _scanner_ref.stop()
+        return {"status": "stopping"}
 
     # --- Risk Policy ---
 

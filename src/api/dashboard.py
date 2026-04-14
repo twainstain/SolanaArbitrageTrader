@@ -46,6 +46,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         .tab.active { background: #1f6feb; color: #fff; border-color: #1f6feb; }
         .filter-row { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; }
         .filter-row label { color: #8b949e; font-size: 13px; }
+        .btn { padding: 6px 16px; border-radius: 6px; font-size: 13px; cursor: pointer;
+               border: 1px solid #30363d; font-weight: bold; }
+        .btn-green { background: #238636; color: #fff; border-color: #238636; }
+        .btn-green:hover { background: #2ea043; }
+        .btn-red { background: #da3633; color: #fff; border-color: #da3633; }
+        .btn-red:hover { background: #f85149; }
+        .btn-gray { background: #21262d; color: #8b949e; border-color: #30363d; }
+        .controls { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; }
         select { background: #161b22; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px;
                  padding: 6px 12px; font-size: 13px; }
         .bar-chart { display: flex; align-items: flex-end; gap: 4px; height: 120px;
@@ -62,6 +70,17 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 </head>
 <body>
     <h1>Arbitrage Trader Dashboard</h1>
+
+    <!-- Scanner Controls -->
+    <div class="controls" id="scanner-controls">
+        <span style="color:#8b949e;font-size:13px">Scanner:</span>
+        <span id="scanner-status" class="tag tag-detected">loading...</span>
+        <button class="btn btn-green" onclick="controlScanner('start')">Start</button>
+        <button class="btn btn-red" onclick="controlScanner('stop')">Stop</button>
+        <span style="color:#30363d">|</span>
+        <span style="color:#8b949e;font-size:13px">Execution:</span>
+        <button class="btn btn-gray" id="exec-toggle" onclick="toggleExecution()">loading...</button>
+    </div>
 
     <!-- Status Cards -->
     <h2>System Status</h2>
@@ -352,11 +371,50 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     function setWindow(w) { currentWindow = w; loadWindows(); loadOpportunities(); loadBarChart(); }
 
+    // --- Scanner control functions ---
+
+    async function loadScannerStatus() {
+        const data = await fetchJSON('/scanner');
+        const el = document.getElementById('scanner-status');
+        if (data.running) {
+            el.textContent = 'RUNNING';
+            el.className = 'tag tag-approved';
+        } else {
+            el.textContent = 'STOPPED';
+            el.className = 'tag tag-rejected';
+        }
+        const execBtn = document.getElementById('exec-toggle');
+        if (data.execution_enabled) {
+            execBtn.textContent = 'LIVE — Click to Disable';
+            execBtn.className = 'btn btn-red';
+        } else {
+            execBtn.textContent = 'SIMULATION — Click to Enable Live';
+            execBtn.className = 'btn btn-gray';
+        }
+    }
+
+    async function controlScanner(action) {
+        await fetch(API_BASE + '/scanner/' + action, {method: 'POST'});
+        setTimeout(loadScannerStatus, 500);
+    }
+
+    async function toggleExecution() {
+        const current = await fetchJSON('/execution');
+        await fetch(API_BASE + '/execution', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({enabled: !current.execution_enabled}),
+        });
+        setTimeout(loadScannerStatus, 300);
+    }
+
     async function init() {
         await loadChainFilter();
-        await Promise.all([loadStatus(), loadWindows(), loadChains(), loadOpportunities(), loadBarChart()]);
+        await Promise.all([loadStatus(), loadWindows(), loadChains(), loadOpportunities(), loadBarChart(), loadScannerStatus()]);
     }
     init();
+    // Refresh scanner status every 10 seconds.
+    setInterval(loadScannerStatus, 10000);
     </script>
 </body>
 </html>"""

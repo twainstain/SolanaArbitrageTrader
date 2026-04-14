@@ -14,12 +14,9 @@
     {"pair": "WBTC/USDC", "base_asset": "WBTC", "quote_asset": "USDC", "trade_size": 0.05}
   ],
   "dexes": [
-    {"name": "Uniswap-Ethereum",  "base_price": 0, "fee_bps": 5.0,  "volatility_bps": 0, "chain": "ethereum", "dex_type": "uniswap_v3"},
-    {"name": "Sushi-Ethereum",    "base_price": 0, "fee_bps": 30.0, "volatility_bps": 0, "chain": "ethereum", "dex_type": "sushi_v3"},
-    {"name": "Uniswap-Arbitrum",  "base_price": 0, "fee_bps": 5.0,  "volatility_bps": 0, "chain": "arbitrum", "dex_type": "uniswap_v3"},
-    {"name": "Sushi-Arbitrum",    "base_price": 0, "fee_bps": 30.0, "volatility_bps": 0, "chain": "arbitrum", "dex_type": "sushi_v3"},
-    {"name": "Uniswap-Base",      "base_price": 0, "fee_bps": 5.0,  "volatility_bps": 0, "chain": "base",     "dex_type": "uniswap_v3"},
-    {"name": "Sushi-Base",        "base_price": 0, "fee_bps": 30.0, "volatility_bps": 0, "chain": "base",     "dex_type": "sushi_v3"},
-    {"name": "Uniswap-Optimism",  "base_price": 0, "fee_bps": 5.0,  "volatility_bps": 0, "chain": "optimism", "dex_type": "uniswap_v3"}
+    {"name": "Uniswap-Ethereum",  "base_price": 0, "fee_bps": 5.0, "volatility_bps": 0, "chain": "ethereum", "dex_type": "uniswap_v3"},
+    {"name": "Uniswap-Arbitrum",  "base_price": 0, "fee_bps": 5.0, "volatility_bps": 0, "chain": "arbitrum", "dex_type": "uniswap_v3"},
+    {"name": "Uniswap-Base",      "base_price": 0, "fee_bps": 5.0, "volatility_bps": 0, "chain": "base",     "dex_type": "uniswap_v3"},
+    {"name": "Uniswap-Optimism",  "base_price": 0, "fee_bps": 5.0, "volatility_bps": 0, "chain": "optimism", "dex_type": "uniswap_v3"}
   ]
 }

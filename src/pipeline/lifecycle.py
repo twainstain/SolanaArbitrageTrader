@@ -96,6 +96,13 @@ class CandidatePipeline:
         _t0 = _time.monotonic()
         _timings: dict[str, float] = {}
 
+        # Batch all DB writes into a single commit for the detect→price→risk path.
+        with self.repo.conn.batch():
+            return self._process_inner(opportunity, _t0, _timings)
+
+    def _process_inner(self, opportunity: Opportunity, _t0: float, _timings: dict[str, float]) -> PipelineResult:
+        import time as _time
+
         # --- Stage 1: Detection ---
         opp_id = self.repo.create_opportunity(
             pair=opportunity.pair,

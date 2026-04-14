@@ -350,5 +350,67 @@ class PostgresConfigTests(unittest.TestCase):
         Path(tmp.name).unlink(missing_ok=True)
 
 
+class BatchCommitTests(unittest.TestCase):
+    """Tests for the DbConnection.batch() context manager."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.conn = init_db(self.tmp.name)
+        self.repo = Repository(self.conn)
+
+    def tearDown(self) -> None:
+        close_db()
+        Path(self.tmp.name).unlink(missing_ok=True)
+
+    def test_batch_suppresses_intermediate_commits(self) -> None:
+        with self.conn.batch():
+            opp_id = self.repo.create_opportunity(
+                pair="WETH/USDC", chain="ethereum",
+                buy_dex="A", sell_dex="B", spread_bps=D("10"),
+            )
+            self.repo.update_opportunity_status(opp_id, "priced")
+        opp = self.repo.get_opportunity(opp_id)
+        self.assertEqual(opp["status"], "priced")
+
+    def test_batch_commits_on_exit(self) -> None:
+        with self.conn.batch():
+            opp_id = self.repo.create_opportunity(
+                pair="WETH/USDC", chain="ethereum",
+                buy_dex="A", sell_dex="B", spread_bps=D("10"),
+            )
+        opp = self.repo.get_opportunity(opp_id)
+        self.assertIsNotNone(opp)
+
+    def test_nested_batch(self) -> None:
+        with self.conn.batch():
+            with self.conn.batch():
+                opp_id = self.repo.create_opportunity(
+                    pair="WETH/USDC", chain="ethereum",
+                    buy_dex="A", sell_dex="B", spread_bps=D("10"),
+                )
+            # Inner batch exited — should NOT have committed yet.
+            self.assertEqual(self.conn._batch_depth, 1)
+        # Outer batch exited — should have committed.
+        self.assertEqual(self.conn._batch_depth, 0)
+        opp = self.repo.get_opportunity(opp_id)
+        self.assertIsNotNone(opp)
+
+    def test_batch_depth_counter(self) -> None:
+        self.assertEqual(self.conn._batch_depth, 0)
+        with self.conn.batch():
+            self.assertEqual(self.conn._batch_depth, 1)
+            with self.conn.batch():
+                self.assertEqual(self.conn._batch_depth, 2)
+            self.assertEqual(self.conn._batch_depth, 1)
+        self.assertEqual(self.conn._batch_depth, 0)
+
+    def test_sqlite_pragmas_applied(self) -> None:
+        row = self.conn.execute("PRAGMA synchronous").fetchone()
+        # NORMAL = 1
+        self.assertEqual(row[0], 1)
+        row = self.conn.execute("PRAGMA mmap_size").fetchone()
+        self.assertEqual(row[0], 268435456)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -164,6 +165,7 @@ class DbConnection:
     def __init__(self, conn: Any, backend: str) -> None:
         self._conn = conn
         self.backend = backend  # "sqlite" or "postgres"
+        self._batch_depth = 0
 
     def _adapt_sql(self, sql: str) -> str:
         """Convert ? placeholders to %s for PostgreSQL."""
@@ -188,7 +190,20 @@ class DbConnection:
             cur.close()
 
     def commit(self) -> None:
+        if self._batch_depth > 0:
+            return
         self._conn.commit()
+
+    @contextmanager
+    def batch(self):
+        """Suppress individual commit() calls; do one commit at the end."""
+        self._batch_depth += 1
+        try:
+            yield
+        finally:
+            self._batch_depth -= 1
+            if self._batch_depth == 0:
+                self._conn.commit()
 
     def close(self) -> None:
         self._conn.close()
@@ -224,6 +239,8 @@ def _connect_sqlite(path: str) -> DbConnection:
     conn = sqlite3.connect(path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA mmap_size=268435456")
     conn.execute("PRAGMA foreign_keys=ON")
     return DbConnection(conn, "sqlite")
 

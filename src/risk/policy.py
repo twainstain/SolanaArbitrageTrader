@@ -30,6 +30,25 @@ class RiskVerdict(NamedTuple):
     details: dict
 
 
+# Per-chain minimum spread thresholds.
+# Ethereum mainnet has high gas ($2-5), so needs a wider spread to be
+# profitable.  L2s have cheap gas ($0.01-0.10), so smaller spreads work.
+#
+# Derivation (1 WETH trade at ~$2300):
+#   Ethereum: gas ~$3, flash 9bps=$2.07, slip 10bps=$2.30 → need ~$8 = 0.35%
+#   Arbitrum: gas ~$0.10, same fees → need ~$4.5 = 0.20%
+#   Base/Optimism: gas ~$0.05, same fees → need ~$4.4 = 0.15%
+CHAIN_MIN_SPREAD_PCT: dict[str, Decimal] = {
+    "ethereum": D("0.40"),
+    "arbitrum": D("0.20"),
+    "base": D("0.15"),
+    "optimism": D("0.15"),
+    "polygon": D("0.20"),
+    "bsc": D("0.20"),
+    "avax": D("0.25"),
+}
+
+
 @dataclass
 class RiskPolicy:
     """Configurable risk policy with named rules.
@@ -40,10 +59,11 @@ class RiskPolicy:
     # Production: 0.005 WETH (~$10). Testing: 0.0005 (~$1).
     min_net_profit: Decimal = D("0.005")
 
-    # Minimum spread percentage to consider an opportunity.
-    # With flash loans, even small spreads can be profitable since there's
-    # no capital at risk. 0.5% covers fees + gas on most L2 chains.
-    min_spread_pct: Decimal = D("0.5")
+    # Default minimum spread percentage (used when chain not in override map).
+    min_spread_pct: Decimal = D("0.40")
+
+    # Per-chain spread overrides.  L2s with cheap gas can use tighter spreads.
+    chain_min_spread_pct: dict = field(default_factory=lambda: dict(CHAIN_MIN_SPREAD_PCT))
 
     # Maximum allowed slippage in bps
     max_slippage_bps: Decimal = D("50")
@@ -114,11 +134,15 @@ class RiskPolicy:
         # "simulation_approved" vs "simulation_rejected" instead of just "rejected".
         simulation_mode = not self.execution_enabled
 
-        # Rule 2a: Minimum spread percentage
-        if opportunity.gross_spread_pct < self.min_spread_pct:
+        # Rule 2a: Minimum spread percentage (per-chain)
+        chain = opportunity.chain.lower() if opportunity.chain else ""
+        effective_min_spread = self.chain_min_spread_pct.get(chain, self.min_spread_pct)
+        if opportunity.gross_spread_pct < effective_min_spread:
             analysis["reason_detail"] = (
-                f"Spread {opportunity.gross_spread_pct}% is below minimum {self.min_spread_pct}%."
+                f"Spread {opportunity.gross_spread_pct}% is below minimum "
+                f"{effective_min_spread}% for {chain or 'default'}."
             )
+            analysis["chain_min_spread"] = str(effective_min_spread)
             return RiskVerdict(False, "below_min_spread", analysis)
 
         # Rule 2b: Minimum net profit
@@ -197,7 +221,8 @@ class RiskPolicy:
         """Serialize the current policy for logging/API."""
         return {
             "min_net_profit": str(self.min_net_profit),
-            "min_spread_pct": str(self.min_spread_pct),
+            "min_spread_pct_default": str(self.min_spread_pct),
+            "chain_min_spread_pct": {k: str(v) for k, v in self.chain_min_spread_pct.items()},
             "max_slippage_bps": str(self.max_slippage_bps),
             "min_liquidity_usd": str(self.min_liquidity_usd),
             "max_quote_age_seconds": self.max_quote_age_seconds,

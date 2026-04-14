@@ -152,9 +152,9 @@ class MinSpreadTests(unittest.TestCase):
         verdict = policy.evaluate(_make_opp(gross_spread_pct=D("0.5")))
         self.assertTrue(verdict.approved)
 
-    def test_default_min_spread_is_half_percent(self) -> None:
+    def test_default_min_spread_is_0_4_percent(self) -> None:
         policy = RiskPolicy()
-        self.assertEqual(policy.min_spread_pct, D("0.5"))
+        self.assertEqual(policy.min_spread_pct, D("0.40"))
 
     def test_custom_min_spread(self) -> None:
         policy = RiskPolicy(min_spread_pct=D("5.0"))
@@ -169,11 +169,98 @@ class MinSpreadTests(unittest.TestCase):
         self.assertFalse(verdict.approved)
         self.assertEqual(verdict.reason, "below_min_spread")
 
-    def test_half_percent_spread_with_flash_loan_approved(self) -> None:
-        """0.5% spread is viable with flash loans (no capital at risk)."""
+    def test_0_4_spread_approved_on_ethereum(self) -> None:
+        """0.4% spread is viable on Ethereum with flash loans."""
         policy = RiskPolicy(execution_enabled=True)
-        verdict = policy.evaluate(_make_opp(gross_spread_pct=D("0.5")))
+        verdict = policy.evaluate(_make_opp(
+            gross_spread_pct=D("0.4"), chain="ethereum",
+        ))
         self.assertTrue(verdict.approved)
+
+
+class PerChainSpreadTests(unittest.TestCase):
+    """Per-chain minimum spread thresholds — L2s allow tighter spreads."""
+
+    def test_arbitrum_allows_0_2_spread(self) -> None:
+        policy = RiskPolicy(execution_enabled=True)
+        verdict = policy.evaluate(_make_opp(
+            gross_spread_pct=D("0.25"), chain="arbitrum",
+        ))
+        self.assertTrue(verdict.approved)
+
+    def test_arbitrum_rejects_0_15_spread(self) -> None:
+        policy = RiskPolicy(execution_enabled=True)
+        verdict = policy.evaluate(_make_opp(
+            gross_spread_pct=D("0.15"), chain="arbitrum",
+        ))
+        self.assertFalse(verdict.approved)
+        self.assertEqual(verdict.reason, "below_min_spread")
+        self.assertIn("arbitrum", verdict.details["reason_detail"])
+
+    def test_base_allows_0_15_spread(self) -> None:
+        policy = RiskPolicy(execution_enabled=True)
+        verdict = policy.evaluate(_make_opp(
+            gross_spread_pct=D("0.18"), chain="base",
+        ))
+        self.assertTrue(verdict.approved)
+
+    def test_base_rejects_0_1_spread(self) -> None:
+        policy = RiskPolicy(execution_enabled=True)
+        verdict = policy.evaluate(_make_opp(
+            gross_spread_pct=D("0.10"), chain="base",
+        ))
+        self.assertFalse(verdict.approved)
+
+    def test_ethereum_uses_0_4_threshold(self) -> None:
+        policy = RiskPolicy(execution_enabled=True)
+        # 0.35% should fail on Ethereum (threshold 0.40%)
+        verdict = policy.evaluate(_make_opp(
+            gross_spread_pct=D("0.35"), chain="ethereum",
+        ))
+        self.assertFalse(verdict.approved)
+        self.assertIn("ethereum", verdict.details["reason_detail"])
+
+    def test_unknown_chain_uses_default(self) -> None:
+        policy = RiskPolicy(execution_enabled=True)
+        # Unknown chain → uses default 0.40%
+        verdict = policy.evaluate(_make_opp(
+            gross_spread_pct=D("0.45"), chain="zksync",
+        ))
+        self.assertTrue(verdict.approved)
+
+    def test_empty_chain_uses_default(self) -> None:
+        policy = RiskPolicy(execution_enabled=True)
+        verdict = policy.evaluate(_make_opp(
+            gross_spread_pct=D("0.35"), chain="",
+        ))
+        self.assertFalse(verdict.approved)
+
+    def test_custom_chain_override(self) -> None:
+        """Can pass custom per-chain thresholds."""
+        policy = RiskPolicy(
+            execution_enabled=True,
+            chain_min_spread_pct={"ethereum": D("1.0"), "base": D("0.05")},
+        )
+        # Ethereum needs 1.0% now
+        verdict = policy.evaluate(_make_opp(
+            gross_spread_pct=D("0.8"), chain="ethereum",
+        ))
+        self.assertFalse(verdict.approved)
+
+        # Base only needs 0.05%
+        verdict = policy.evaluate(_make_opp(
+            gross_spread_pct=D("0.1"), chain="base",
+        ))
+        self.assertTrue(verdict.approved)
+
+    def test_rejection_includes_chain_threshold(self) -> None:
+        """Rejection detail should show the chain-specific threshold."""
+        policy = RiskPolicy(execution_enabled=True)
+        verdict = policy.evaluate(_make_opp(
+            gross_spread_pct=D("0.10"), chain="arbitrum",
+        ))
+        self.assertIn("0.20", verdict.details["reason_detail"])
+        self.assertIn("chain_min_spread", verdict.details)
 
 
 class ToDictTests(unittest.TestCase):
@@ -181,10 +268,14 @@ class ToDictTests(unittest.TestCase):
         policy = RiskPolicy()
         d = policy.to_dict()
         self.assertIn("min_net_profit", d)
-        self.assertIn("min_spread_pct", d)
+        self.assertIn("min_spread_pct_default", d)
+        self.assertIn("chain_min_spread_pct", d)
         self.assertIn("execution_enabled", d)
         self.assertIn("max_trades_per_hour", d)
         self.assertEqual(d["execution_enabled"], False)
+        # Chain overrides should be serialized
+        self.assertIn("ethereum", d["chain_min_spread_pct"])
+        self.assertIn("arbitrum", d["chain_min_spread_pct"])
 
 
 if __name__ == "__main__":

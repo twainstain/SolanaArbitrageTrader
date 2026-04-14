@@ -168,6 +168,20 @@ CREATE INDEX IF NOT EXISTS idx_result_exec ON trade_results(execution_id);
 CREATE INDEX IF NOT EXISTS idx_checkpoint_type ON system_checkpoints(checkpoint_type);
 CREATE INDEX IF NOT EXISTS idx_discovered_pairs_chain ON discovered_pairs(chain);
 CREATE INDEX IF NOT EXISTS idx_discovered_pairs_pair ON discovered_pairs(pair);
+
+CREATE TABLE IF NOT EXISTS quote_diagnostics (
+    diagnostic_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    dex             TEXT NOT NULL,
+    chain           TEXT NOT NULL,
+    pair            TEXT NOT NULL,
+    success_count   INTEGER NOT NULL DEFAULT 0,
+    total_count     INTEGER NOT NULL DEFAULT 0,
+    avg_latency_ms  REAL NOT NULL DEFAULT 0,
+    last_outcome    TEXT NOT NULL DEFAULT '',
+    last_error      TEXT NOT NULL DEFAULT '',
+    snapshot_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_diag_dex_chain ON quote_diagnostics(dex, chain);
 """
 
 _TABLES_POSTGRES = _TABLES_SQLITE.replace(
@@ -189,8 +203,18 @@ class DbConnection:
         self._batch_depth = 0
 
     def _adapt_sql(self, sql: str) -> str:
-        """Convert ? placeholders to %s for PostgreSQL."""
+        """Convert SQLite-specific SQL to PostgreSQL equivalents.
+
+        Handles:
+          - ? → %s placeholder conversion
+          - INSERT OR IGNORE → INSERT ... ON CONFLICT DO NOTHING
+        """
         if self.backend == "postgres":
+            if "INSERT OR IGNORE" in sql:
+                sql = sql.replace("INSERT OR IGNORE", "INSERT")
+                # Append ON CONFLICT DO NOTHING if not already present.
+                if "ON CONFLICT" not in sql:
+                    sql = sql.rstrip() + " ON CONFLICT DO NOTHING"
             return sql.replace("?", "%s")
         return sql
 

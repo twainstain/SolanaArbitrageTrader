@@ -587,6 +587,12 @@ class OnChainMarket:
         if normal_price <= _ZERO:
             return _ZERO
 
+        # _quote_small_amount only supports these DEX types — all others
+        # return D("0") immediately.  Skip the function call entirely.
+        _SUPPORTED_LIQUIDITY = ("uniswap_v3", "sushi_v3", "pancakeswap_v3", "quickswap_v3")
+        if dex_type not in _SUPPORTED_LIQUIDITY:
+            return _ZERO
+
         # Check TVL cache — avoids extra RPC calls for liquidity estimation.
         # Deep pools (>$1M) use a longer TTL (30 min) since they don't dry up
         # suddenly. Thin pools use the default 5 min so we re-check sooner.

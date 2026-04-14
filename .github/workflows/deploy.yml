@@ -85,26 +85,29 @@ jobs:
             set -e
             cd /opt/arb-trader
 
-            # Pull latest code (for compose file, configs, etc.)
+            # Pull latest code
             git pull origin master --ff-only
 
-            # Login to ECR and pull latest image
-            aws ecr get-login-password --region us-east-1 \
-              | docker login --username AWS --password-stdin ${{ secrets.ECR_REGISTRY }}
-            export ECR_REGISTRY=${{ secrets.ECR_REGISTRY }}
-            docker compose pull bot
+            # Try ECR pull, fall back to local build
+            if [ -n "${{ secrets.ECR_REGISTRY }}" ]; then
+              aws ecr get-login-password --region us-east-1 \
+                | docker login --username AWS --password-stdin ${{ secrets.ECR_REGISTRY }} 2>/dev/null || true
+              export ECR_REGISTRY=${{ secrets.ECR_REGISTRY }}
+              docker compose pull bot 2>/dev/null || echo "ECR pull failed — building locally"
+            fi
+            docker compose build bot
 
             # Rolling restart
             docker compose up -d bot
 
-            # Health check — wait up to 30s (auth required)
+            # Health check — wait up to 60s (startup includes pool discovery)
             CREDS=$(grep DASHBOARD_USER .env | cut -d= -f2):$(grep DASHBOARD_PASS .env | cut -d= -f2)
-            for i in $(seq 1 6); do
+            for i in $(seq 1 12); do
               if curl -sf -u "$CREDS" http://localhost:8000/health > /dev/null 2>&1; then
                 echo "Health check passed"
                 exit 0
               fi
-              echo "Waiting for health check... ($i/6)"
+              echo "Waiting for health check... ($i/12)"
               sleep 5
             done
 

@@ -7,8 +7,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Walk up from this file to find the project root .env.
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# Walk up from this file (src/env.py) to the project root.
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _ENV_PATH = _PROJECT_ROOT / ".env"
 
 

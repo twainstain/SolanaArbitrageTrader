@@ -40,7 +40,7 @@ class _DecimalEncoder(json.JSONEncoder):
 # Log directory — resolve relative to project root
 # ---------------------------------------------------------------------------
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LOG_DIR = _PROJECT_ROOT / "logs"
 
 _CONFIGURED = False

@@ -204,6 +204,36 @@ def main():
     else:
         print("  Could not fetch live prices for comparison")
 
+    # --- DEX verification links ---
+    chain_id_map = {
+        "ethereum": 1, "optimism": 10, "arbitrum": 42161, "base": 8453,
+        "polygon": 137, "bsc": 56, "avalanche": 43114, "scroll": 534352,
+        "linea": 59144, "fantom": 250, "gnosis": 100, "zksync": 324,
+    }
+    chain_slug_map = {
+        "ethereum": "ethereum", "optimism": "optimism", "arbitrum": "arbitrum",
+        "base": "base", "polygon": "polygon", "bsc": "bnb",
+        "avalanche": "avalanche", "scroll": "scroll", "linea": "linea",
+    }
+    usdc_addrs = {
+        "ethereum": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "optimism": "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
+        "arbitrum": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+        "base": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "polygon": "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+    }
+
+    weth_addr = WETH_ADDRESSES.get(buy_chain, "")
+    usdc_addr = usdc_addrs.get(buy_chain, "")
+    chain_id = chain_id_map.get(buy_chain, 0)
+    chain_slug = chain_slug_map.get(buy_chain, buy_chain)
+
+    if weth_addr and usdc_addr:
+        print(f"\n  Verify manually on DEX UIs:")
+        print(f"    Uniswap:  https://app.uniswap.org/swap?chain={chain_slug}&inputCurrency={weth_addr}&outputCurrency={usdc_addr}&exactAmount=1&exactField=input")
+        print(f"    Sushi:    https://www.sushi.com/swap?chainId={chain_id}&token0={weth_addr}&token1={usdc_addr}")
+        print(f"\n    Set input to 1 WETH and compare USDC output on each DEX.")
+
     print()
 
 

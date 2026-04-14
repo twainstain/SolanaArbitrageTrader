@@ -521,24 +521,10 @@ class OnChainMarket:
             abi=UNISWAP_V3_QUOTER_ABI,
         )
         amount_in = 10 ** WETH_DECIMALS
-
-        best_out = 0
-        for fee in (100, 500, 3000, 10000):
-            try:
-                result = quoter.functions.quoteExactInputSingle(
-                    (
-                        Web3.to_checksum_address(weth),
-                        Web3.to_checksum_address(usdc),
-                        amount_in,
-                        fee,
-                        0,
-                    )
-                ).call()
-                if result[0] > best_out:
-                    best_out = result[0]
-            except Exception:
-                continue
-
+        best_out = self._try_fee_tiers(
+            f"uniswap_v3:{chain}", quoter, weth, usdc,
+            amount_in, (100, 500, 3000, 10000),
+        )
         if best_out == 0:
             raise OnChainMarketError(
                 f"Uniswap V3 returned zero for all fee tiers on {chain}."
@@ -564,24 +550,10 @@ class OnChainMarket:
             abi=SUSHI_V3_QUOTER_ABI,
         )
         amount_in = 10 ** WETH_DECIMALS
-
-        best_out = 0
-        for fee in (100, 500, 3000, 10000):
-            try:
-                result = quoter.functions.quoteExactInputSingle(
-                    (
-                        Web3.to_checksum_address(weth),
-                        Web3.to_checksum_address(usdc),
-                        amount_in,
-                        fee,
-                        0,
-                    )
-                ).call()
-                if result[0] > best_out:
-                    best_out = result[0]
-            except Exception:
-                continue
-
+        best_out = self._try_fee_tiers(
+            f"sushi_v3:{chain}", quoter, weth, usdc,
+            amount_in, (100, 500, 3000, 10000),
+        )
         if best_out == 0:
             raise OnChainMarketError(
                 f"SushiSwap V3 returned zero for all fee tiers on {chain}."
@@ -612,29 +584,10 @@ class OnChainMarket:
             abi=PANCAKE_V3_QUOTER_ABI,
         )
         amount_in = 10 ** WETH_DECIMALS
-
-        # PancakeSwap V3 fee tiers — try all and take the best quote.
-        # Liquidity varies by tier; 500 (0.05%) is often deepest for majors.
-        fee_tiers = [100, 500, 2500, 10000]
-        best_out = 0
-
-        for fee in fee_tiers:
-            try:
-                result = quoter.functions.quoteExactInputSingle(
-                    (
-                        Web3.to_checksum_address(weth),
-                        Web3.to_checksum_address(usdc),
-                        amount_in,
-                        fee,
-                        0,
-                    )
-                ).call()
-                amount_out = result[0]
-                if amount_out > best_out:
-                    best_out = amount_out
-            except Exception:
-                continue
-
+        best_out = self._try_fee_tiers(
+            f"pancakeswap_v3:{chain}", quoter, weth, usdc,
+            amount_in, (100, 500, 2500, 10000),
+        )
         if best_out == 0:
             raise OnChainMarketError(
                 f"PancakeSwap V3 returned zero for all fee tiers on {chain}."

@@ -325,5 +325,82 @@ class OnChainMarketSushiTests(unittest.TestCase):
             ocm.SUSHI_V3_QUOTER.update(original_sushi)
 
 
+class FeeTierCacheTests(unittest.TestCase):
+    """Tests for the fee tier caching in OnChainMarket._try_fee_tiers."""
+
+    @patch("onchain_market.Web3")
+    def setUp(self, mock_web3: MagicMock) -> None:
+        mock_web3.HTTPProvider.return_value = MagicMock()
+        mock_web3.to_checksum_address = lambda x: x
+        self.config = _make_onchain_config()
+        self.market = OnChainMarket(self.config, rpc_overrides={"ethereum": "http://fake"})
+
+    def test_first_call_tries_all_tiers(self) -> None:
+        """First call should try all fee tiers and cache the best."""
+        call_count = 0
+        def mock_call():
+            nonlocal call_count
+            call_count += 1
+            return _mock_quoter_result(2200.0)
+
+        quoter = MagicMock()
+        quoter.functions.quoteExactInputSingle.return_value.call = mock_call
+
+        with patch("onchain_market.Web3") as w3:
+            w3.to_checksum_address = lambda x: x
+            result = self.market._try_fee_tiers(
+                "test:eth", quoter, "0xweth", "0xusdc",
+                10**18, (100, 500, 3000, 10000),
+            )
+        self.assertGreater(result, 0)
+        self.assertEqual(call_count, 4)  # All 4 tiers tried
+        self.assertIn("test:eth", self.market._best_fee)
+
+    def test_cached_call_tries_one_tier(self) -> None:
+        """Second call should use cached tier (1 call instead of 4)."""
+        import time
+        self.market._best_fee["test:eth"] = (500, time.monotonic())
+
+        call_count = 0
+        def mock_call():
+            nonlocal call_count
+            call_count += 1
+            return _mock_quoter_result(2200.0)
+
+        quoter = MagicMock()
+        quoter.functions.quoteExactInputSingle.return_value.call = mock_call
+
+        with patch("onchain_market.Web3") as w3:
+            w3.to_checksum_address = lambda x: x
+            result = self.market._try_fee_tiers(
+                "test:eth", quoter, "0xweth", "0xusdc",
+                10**18, (100, 500, 3000, 10000),
+            )
+        self.assertGreater(result, 0)
+        self.assertEqual(call_count, 1)  # Only cached tier tried
+
+    def test_stale_cache_retries_all_tiers(self) -> None:
+        """After 60s the cache expires and all tiers are retried."""
+        import time
+        self.market._best_fee["test:eth"] = (500, time.monotonic() - 61)
+
+        call_count = 0
+        def mock_call():
+            nonlocal call_count
+            call_count += 1
+            return _mock_quoter_result(2200.0)
+
+        quoter = MagicMock()
+        quoter.functions.quoteExactInputSingle.return_value.call = mock_call
+
+        with patch("onchain_market.Web3") as w3:
+            w3.to_checksum_address = lambda x: x
+            self.market._try_fee_tiers(
+                "test:eth", quoter, "0xweth", "0xusdc",
+                10**18, (100, 500, 3000, 10000),
+            )
+        self.assertEqual(call_count, 4)  # All tiers retried
+
+
 if __name__ == "__main__":
     unittest.main()

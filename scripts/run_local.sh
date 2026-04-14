@@ -101,13 +101,13 @@ echo "============================================================"
 > "$LOG_FILE"
 
 if [ "$MODE" = "event-driven" ]; then
-    PYTHONPATH=src nohup python3 -m run_event_driven \
+    PYTHONPATH=src nohup python3.11 -m run_event_driven \
         --config config/multichain_onchain_config.json \
         --port 8000 \
         --poll-interval "$POLL_INTERVAL" \
         > "$LOG_FILE" 2>&1 &
 else
-    PYTHONPATH=src nohup python3 -m run_live_with_dashboard \
+    PYTHONPATH=src nohup python3.11 -m run_live_with_dashboard \
         --onchain \
         --config config/multichain_onchain_config.json \
         --iterations 50 \

@@ -92,6 +92,38 @@ def get_windowed_stats(conn: DbConnection, window_key: str, chain: str | None = 
 
     trades = dict(trade_row) if trade_row else {}
 
+    # Expected profit from pricing (available even in simulation mode).
+    if chain:
+        profit_row = conn.execute(
+            "SELECT "
+            "  COUNT(*) as priced_count, "
+            "  COALESCE(SUM(CAST(pr.expected_net_profit AS REAL)), 0) as total_expected_profit, "
+            "  COALESCE(AVG(CAST(pr.expected_net_profit AS REAL)), 0) as avg_expected_profit, "
+            "  COALESCE(MAX(CAST(pr.expected_net_profit AS REAL)), 0) as max_expected_profit, "
+            "  COALESCE(MIN(CAST(pr.expected_net_profit AS REAL)), 0) as min_expected_profit "
+            "FROM pricing_results pr "
+            "JOIN opportunities o ON pr.opportunity_id = o.opportunity_id "
+            "WHERE o.detected_at >= ? AND o.chain = ? "
+            "AND CAST(pr.expected_net_profit AS REAL) > 0",
+            (since, chain),
+        ).fetchone()
+    else:
+        profit_row = conn.execute(
+            "SELECT "
+            "  COUNT(*) as priced_count, "
+            "  COALESCE(SUM(CAST(pr.expected_net_profit AS REAL)), 0) as total_expected_profit, "
+            "  COALESCE(AVG(CAST(pr.expected_net_profit AS REAL)), 0) as avg_expected_profit, "
+            "  COALESCE(MAX(CAST(pr.expected_net_profit AS REAL)), 0) as max_expected_profit, "
+            "  COALESCE(MIN(CAST(pr.expected_net_profit AS REAL)), 0) as min_expected_profit "
+            "FROM pricing_results pr "
+            "JOIN opportunities o ON pr.opportunity_id = o.opportunity_id "
+            "WHERE o.detected_at >= ? "
+            "AND CAST(pr.expected_net_profit AS REAL) > 0",
+            (since,),
+        ).fetchone()
+
+    profit = dict(profit_row) if profit_row else {}
+
     return {
         "window": window_key,
         "chain": chain or "all",
@@ -101,6 +133,7 @@ def get_windowed_stats(conn: DbConnection, window_key: str, chain: str | None = 
             "funnel": funnel,
         },
         "trades": trades,
+        "profit": profit,
     }
 
 

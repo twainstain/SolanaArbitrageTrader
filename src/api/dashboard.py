@@ -219,23 +219,40 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         const grid = document.getElementById('window-grid');
         const o = data.opportunities || {};
         const t = data.trades || {};
+        const p = data.profit || {};
+        const totalProfit = Number(p.total_expected_profit || 0);
+        const avgProfit = Number(p.avg_expected_profit || 0);
+        const maxProfit = Number(p.max_expected_profit || 0);
+        const profitCount = p.priced_count || 0;
         grid.innerHTML = `
             <div class="card">
                 <div class="card-title">Opportunities (${currentWindow})</div>
                 <div class="card-value">${o.total || 0}</div>
+                <div class="card-sub">${profitCount} profitable</div>
             </div>
             <div class="card">
-                <div class="card-title">Trades (${currentWindow})</div>
+                <div class="card-title">Total Expected Profit (${currentWindow})</div>
+                <div class="card-value ${totalProfit > 0 ? 'status-ok' : ''}">${totalProfit.toFixed(6)} ETH</div>
+                <div class="card-sub">~$${(totalProfit * 2300).toFixed(2)}</div>
+            </div>
+            <div class="card">
+                <div class="card-title">Avg Profit / Opp (${currentWindow})</div>
+                <div class="card-value">${avgProfit.toFixed(6)} ETH</div>
+                <div class="card-sub">~$${(avgProfit * 2300).toFixed(2)}</div>
+            </div>
+            <div class="card">
+                <div class="card-title">Best Single Opp (${currentWindow})</div>
+                <div class="card-value">${maxProfit.toFixed(6)} ETH</div>
+                <div class="card-sub">~$${(maxProfit * 2300).toFixed(2)}</div>
+            </div>
+            <div class="card">
+                <div class="card-title">Trades Executed (${currentWindow})</div>
                 <div class="card-value">${t.total_trades || 0}</div>
-                <div class="card-sub">Profit: ${Number(t.total_profit || 0).toFixed(6)}</div>
+                <div class="card-sub">Realized: ${Number(t.total_profit || 0).toFixed(6)} ETH</div>
             </div>
             <div class="card">
-                <div class="card-title">Successful (${currentWindow})</div>
-                <div class="card-value">${t.successful || 0}</div>
-            </div>
-            <div class="card">
-                <div class="card-title">Reverted (${currentWindow})</div>
-                <div class="card-value">${t.reverted || 0}</div>
+                <div class="card-title">Success / Revert (${currentWindow})</div>
+                <div class="card-value">${t.successful || 0} / ${t.reverted || 0}</div>
             </div>
         `;
     }

@@ -61,6 +61,7 @@ class TokenAddresses:
     usdt: str | None = None
     wbtc: str | None = None
     wbnb: str | None = None  # BSC native wrapped token
+    usdc_e: str | None = None  # Bridged USDC (USDC.e / USDbC)
     arb: str | None = None
     op: str | None = None
     link: str | None = None
@@ -87,6 +88,8 @@ CHAIN_TOKENS: dict[str, TokenAddresses] = {
     "base": TokenAddresses(
         weth="0x4200000000000000000000000000000000000006",
         usdc="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        usdt="0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2",
+        usdc_e="0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA",  # USDbC (bridged)
         dai="0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb",
     ),
     "arbitrum": TokenAddresses(
@@ -94,6 +97,7 @@ CHAIN_TOKENS: dict[str, TokenAddresses] = {
         usdc="0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
         usdt="0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9",
         wbtc="0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0f",
+        usdc_e="0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8",
         arb="0x912CE59144191C1204E64559FE8253a0e49E6548",
         link="0xf97f4df75117a78c1A5a0DBb814Af92458539FB4",
         gmx="0xfc5A1A6EB076a2C7aD06eD22C90d7E710E35ad0a",
@@ -120,6 +124,7 @@ CHAIN_TOKENS: dict[str, TokenAddresses] = {
     "optimism": TokenAddresses(
         weth="0x4200000000000000000000000000000000000006",
         usdc="0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
+        usdc_e="0x7F5c764cBc14f9669B88837ca1490cCa17c31607",
         usdt="0x94b008aA00579c1307B0EF2c499aD98a8ce58e58",
         wbtc="0x68f180fcCe6836688e9084f035309E29Bf0A2095",
         op="0x4200000000000000000000000000000000000042",
@@ -172,6 +177,8 @@ SYMBOL_TO_ATTR: dict[str, str] = {
     "AAVE": "aave",
     "CRV": "crv",
     "GMX": "gmx",
+    "USDC.E": "usdc_e",
+    "USDBC": "usdc_e",
 }
 
 # ---------------------------------------------------------------------------
@@ -244,6 +251,14 @@ def get_dynamic_tokens() -> dict:
     """Return all dynamically registered tokens."""
     with _dynamic_lock:
         return dict(_dynamic_tokens)
+
+
+def bridged_usdc_address(chain: str) -> str | None:
+    """Return the bridged USDC (USDC.e / USDbC) address for a chain, or None."""
+    tokens = CHAIN_TOKENS.get(chain)
+    if tokens is not None:
+        return tokens.usdc_e
+    return None
 
 
 def token_decimals(symbol: str) -> int:

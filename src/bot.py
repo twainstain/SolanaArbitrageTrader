@@ -46,14 +46,20 @@ class ArbitrageBot:
         dispatcher: AlertDispatcher | None = None,
     ) -> None:
         self.config = config
+        self._pairs = pairs
         self.market: MarketSource = market or SimulatedMarket(config)
-        self.strategy = strategy or ArbitrageStrategy(config)
+        self.strategy = strategy or ArbitrageStrategy(config, pairs=self._build_pair_list())
         self.executor: Executor = executor or PaperExecutor(config)
         self.dispatcher = dispatcher or AlertDispatcher()
         # Pairs to scan — passed directly (e.g. from pair_scanner discovery)
         # or falls back to config's primary pair + extra_pairs.
-        self._pairs = pairs
         self._shutdown_requested = False
+
+    @staticmethod
+    def _base_asset_for_opportunity(opportunity: Opportunity) -> str:
+        if "/" in opportunity.pair:
+            return opportunity.pair.split("/", 1)[0]
+        return ""
 
     def request_shutdown(self) -> None:
         """Signal the bot to stop after the current iteration completes."""
@@ -81,16 +87,14 @@ class ArbitrageBot:
         return result
 
     @staticmethod
-    def _filter_outliers(quotes: list[MarketQuote], max_deviation: Decimal = D("0.05")) -> list[MarketQuote]:
+    def _filter_outliers(quotes: list[MarketQuote], max_deviation: Decimal = D("0.03")) -> list[MarketQuote]:
         """Remove quotes whose mid-price deviates more than max_deviation from the pair median.
 
         Uses median (not mean) because median is robust to outliers — one garbage
-        quote won't skew the reference price. 50% threshold catches data errors like
-        Sushi returning $115 for WETH when others show $2200 (95% deviation).
+        quote won't skew the reference price. 3% threshold catches stale/thin pool
+        quotes (e.g. Sushi-Arbitrum returning $2231 when others show $2340 = 4.7%).
+        Real arbitrage spreads are typically <1%, so 3% is generous.
         Per-pair filtering ensures bad data on one pair doesn't affect others.
-
-        This catches bad data from low-liquidity pools (e.g. a pool returning $39
-        for WETH when others show ~$2200).
         """
         by_pair: dict[str, list[MarketQuote]] = defaultdict(list)
         for q in quotes:
@@ -191,13 +195,14 @@ class ArbitrageBot:
 
                 if dry_run:
                     decision = "dry_run_skip"
+                    base_asset = self._base_asset_for_opportunity(opportunity) or self.config.base_asset
                     logger.info(
                         "[scan %d] %s buy on %s, sell on %s, "
                         "size=%.4f %s, expected net=%.6f %s (dry-run)",
                         index, opportunity.pair,
                         opportunity.buy_dex, opportunity.sell_dex,
-                        float(opportunity.trade_size), self.config.base_asset,
-                        float(opportunity.net_profit_base), self.config.base_asset,
+                        float(opportunity.trade_size), base_asset,
+                        float(opportunity.net_profit_base), base_asset,
                     )
                     log_scan(logger, index, quotes, opportunity, decision)
                 else:
@@ -206,17 +211,18 @@ class ArbitrageBot:
                         decision = "executed"
                         executed_count += 1
                         total_realized_profit += result.realized_profit_base
+                        base_asset = self._base_asset_for_opportunity(opportunity) or self.config.base_asset
                         logger.info(
                             "[scan %d] %s buy on %s, sell on %s, "
                             "size=%.4f %s, expected net=%.6f %s",
                             index, opportunity.pair,
                             opportunity.buy_dex, opportunity.sell_dex,
-                            float(opportunity.trade_size), self.config.base_asset,
-                            float(opportunity.net_profit_base), self.config.base_asset,
+                            float(opportunity.trade_size), base_asset,
+                            float(opportunity.net_profit_base), base_asset,
                         )
                         logger.info(
                             "[exec %d] executed, realized profit=%.6f %s",
-                            index, float(result.realized_profit_base), self.config.base_asset,
+                            index, float(result.realized_profit_base), base_asset,
                         )
                         self.dispatcher.trade_executed(
                             pair=opportunity.pair,

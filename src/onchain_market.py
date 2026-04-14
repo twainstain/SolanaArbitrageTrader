@@ -17,15 +17,17 @@ from __future__ import annotations
 
 import time as _time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from decimal import Decimal
 
 from web3 import Web3
 
-from config import BotConfig
+from config import BotConfig, PairConfig
 import logging
 
 from contracts import (
     AERODROME_ROUTER,
+    ALGEBRA_V2_QUOTER_ABI,
     BALANCER_POOL_IDS,
     BALANCER_VAULT,
     BALANCER_VAULT_ABI,
@@ -59,7 +61,7 @@ BACKUP_RPC_URLS: dict[str, list[str]] = {
 }
 from data.liquidity_cache import LiquidityCache
 from models import BPS_DIVISOR, MarketQuote
-from tokens import CHAIN_TOKENS
+from tokens import CHAIN_TOKENS, token_decimals
 
 D = Decimal
 TWO = D("2")
@@ -69,37 +71,62 @@ SUPPORTED_DEX_TYPES = (
     "camelot_v3", "velodrome_v2", "aerodrome",
 )
 
-# Token decimals used when converting raw uint256 amounts.
-WETH_DECIMALS = 18
-USDC_DECIMALS = 6
-
-# Sanity bounds: reject quotes outside this range for WETH/USDC.
-# If 1 WETH returns less than $100 or more than $100K in USDC,
-# the pool is illiquid or the fee tier is wrong.
-MIN_SANE_PRICE = D("100")
-MAX_SANE_PRICE = D("100000")
+STABLE_SYMBOLS = frozenset({"USDC", "USDT", "DAI"})
+MAJOR_SYMBOLS = frozenset({"WETH", "ETH", "WBTC", "BTC", "WBNB", "BNB", "ARB", "OP", "LINK", "AAVE", "UNI", "CRV", "GMX"})
 
 
 class OnChainMarketError(Exception):
     """Raised when an on-chain query fails."""
 
 
-def _validate_price(price: Decimal, dex: str, chain: str) -> Decimal:
-    """Reject quotes that are obviously wrong (illiquid pool / wrong fee tier).
+def _validate_price(
+    price: Decimal,
+    dex: str,
+    chain: str,
+    pair_name: str,
+    base_symbol: str,
+    quote_symbol: str,
+) -> Decimal:
+    """Reject quotes that are obviously wrong for the pair being scanned."""
+    if price <= 0:
+        raise OnChainMarketError(f"{dex} on {chain} returned non-positive quote for {pair_name}.")
 
-    Bounds [$100, $100K] for WETH/USDC cover all reasonable market conditions.
-    Catches: Sushi returning $39 (wrong fee tier), PancakeSwap BSC returning
-    $2 trillion (WETH decimal mismatch on BSC), pools with dust liquidity.
-    """
-    if price < MIN_SANE_PRICE:
+    base = base_symbol.upper()
+    quote = quote_symbol.upper()
+
+    # Stable/stable pools should stay close to parity.
+    if base in STABLE_SYMBOLS and quote in STABLE_SYMBOLS:
+        if price < D("0.5") or price > D("2"):
+            raise OnChainMarketError(
+                f"{dex} on {chain} returned {price} for {pair_name} — outside stable-pair bounds."
+            )
+        return price
+
+    # Major tokens quoted in stablecoins should be positive but can span a wide range.
+    if quote in STABLE_SYMBOLS and base in MAJOR_SYMBOLS:
+        if price > D("1000000"):
+            raise OnChainMarketError(
+                f"{dex} on {chain} returned {price} for {pair_name} — above major/stable bounds."
+            )
+        return price
+
+    # For everything else, keep only a very high upper bound to catch unit bugs.
+    if price > D("1000000000000"):
         raise OnChainMarketError(
-            f"{dex} on {chain} returned ${float(price):.2f} — below minimum ${float(MIN_SANE_PRICE)}"
-        )
-    if price > MAX_SANE_PRICE:
-        raise OnChainMarketError(
-            f"{dex} on {chain} returned ${float(price):.2f} — above maximum ${float(MAX_SANE_PRICE)}"
+            f"{dex} on {chain} returned {price} for {pair_name} — above generic sanity bounds."
         )
     return price
+
+
+@dataclass(frozen=True)
+class _PairDef:
+    pair_name: str
+    base_asset: str
+    quote_asset: str
+    trade_size: Decimal
+    base_address: str | None = None
+    quote_address: str | None = None
+    pair_chain: str | None = None
 
 
 class OnChainMarket:
@@ -110,10 +137,44 @@ class OnChainMarket:
         config: BotConfig,
         rpc_overrides: dict[str, str] | None = None,
         liquidity_cache: LiquidityCache | None = None,
+        pairs: list[PairConfig] | None = None,
+        diagnostics: "QuoteDiagnostics | None" = None,
     ) -> None:
         self.config = config
         self._rpc_overrides = rpc_overrides or {}
         self.liquidity_cache = liquidity_cache or LiquidityCache()
+        self.diagnostics = diagnostics
+        self._pairs: list[_PairDef] = []
+
+        if pairs is not None:
+            for p in pairs:
+                self._pairs.append(_PairDef(
+                    pair_name=p.pair,
+                    base_asset=p.base_asset,
+                    quote_asset=p.quote_asset,
+                    trade_size=p.trade_size,
+                    base_address=p.base_address,
+                    quote_address=p.quote_address,
+                    pair_chain=p.chain,
+                ))
+        else:
+            self._pairs.append(_PairDef(
+                pair_name=config.pair,
+                base_asset=config.base_asset,
+                quote_asset=config.quote_asset,
+                trade_size=config.trade_size,
+            ))
+            if config.extra_pairs:
+                for p in config.extra_pairs:
+                    self._pairs.append(_PairDef(
+                        pair_name=p.pair,
+                        base_asset=p.base_asset,
+                        quote_asset=p.quote_asset,
+                        trade_size=p.trade_size,
+                        base_address=p.base_address,
+                        quote_address=p.quote_address,
+                        pair_chain=p.chain,
+                    ))
 
         # Pre-build web3 instances keyed by chain, with failover URLs.
         self._w3: dict[str, Web3] = {}
@@ -155,6 +216,29 @@ class OnChainMarket:
                 self._rpc_urls[chain] = urls
                 self._rpc_index[chain] = 0
                 self._w3[chain] = Web3(Web3.HTTPProvider(urls[0], request_kwargs={"timeout": 8}))
+
+    def _resolve_pair_address(
+        self,
+        pair_def: _PairDef,
+        chain: str,
+        symbol: str,
+        discovered_address: str | None,
+    ) -> str | None:
+        from tokens import resolve_token_address
+
+        if pair_def.pair_chain and pair_def.pair_chain != chain:
+            return None
+        if discovered_address and (pair_def.pair_chain is None or pair_def.pair_chain == chain):
+            return discovered_address
+        return resolve_token_address(chain, symbol)
+
+    @staticmethod
+    def _amount_in_for_symbol(symbol: str) -> int:
+        return 10 ** token_decimals(symbol)
+
+    @staticmethod
+    def _price_from_amount_out(amount_out: int, quote_symbol: str) -> Decimal:
+        return D(amount_out) / D(10 ** token_decimals(quote_symbol))
 
     def _rotate_rpc(self, chain: str) -> None:
         """Rotate to the next RPC endpoint for a chain after a failure.
@@ -226,47 +310,87 @@ class OnChainMarket:
         Each DEX quote is an independent RPC call, so parallel fetching
         reduces total latency from sum(latencies) to max(latencies).
         """
-        from tokens import resolve_token_address
-
-        def _fetch_one(dex: object) -> MarketQuote:
+        def _fetch_one(dex: object, pair_def: _PairDef) -> MarketQuote:
             chain = dex.chain  # type: ignore[union-attr]
             dex_type = dex.dex_type  # type: ignore[union-attr]
             assert chain is not None and dex_type is not None
 
-            base_addr = resolve_token_address(chain, self.config.base_asset)
-            quote_addr = resolve_token_address(chain, self.config.quote_asset)
+            base_addr = self._resolve_pair_address(
+                pair_def, chain, pair_def.base_asset, pair_def.base_address,
+            )
+            quote_addr = self._resolve_pair_address(
+                pair_def, chain, pair_def.quote_asset, pair_def.quote_address,
+            )
             if not base_addr or not quote_addr:
                 raise OnChainMarketError(
-                    f"Cannot resolve {self.config.pair} token addresses on {chain}."
+                    f"Cannot resolve {pair_def.pair_name} token addresses on {chain}."
                 )
 
             def _do_quote() -> tuple[Decimal, Decimal]:
                 if dex_type == "uniswap_v3":
-                    return self._quote_uniswap_v3(chain, base_addr, quote_addr)
+                    return self._quote_uniswap_v3(
+                        chain, base_addr, quote_addr, pair_def.base_asset, pair_def.quote_asset,
+                    )
                 elif dex_type == "sushi_v3":
-                    return self._quote_sushi_v3(chain, base_addr, quote_addr)
+                    return self._quote_sushi_v3(
+                        chain, base_addr, quote_addr, pair_def.base_asset, pair_def.quote_asset,
+                    )
                 elif dex_type == "pancakeswap_v3":
-                    return self._quote_pancakeswap_v3(chain, base_addr, quote_addr)
+                    return self._quote_pancakeswap_v3(
+                        chain, base_addr, quote_addr, pair_def.base_asset, pair_def.quote_asset,
+                    )
                 elif dex_type == "balancer_v2":
-                    return self._quote_balancer_v2(chain, base_addr, quote_addr)
+                    return self._quote_balancer_v2(
+                        chain, base_addr, quote_addr, pair_def.base_asset, pair_def.quote_asset,
+                    )
                 elif dex_type == "quickswap_v3":
-                    return self._quote_quickswap_v3(chain, base_addr, quote_addr)
+                    return self._quote_quickswap_v3(
+                        chain, base_addr, quote_addr, pair_def.base_asset, pair_def.quote_asset,
+                    )
                 elif dex_type == "camelot_v3":
-                    return self._quote_camelot_v3(chain, base_addr, quote_addr)
+                    return self._quote_camelot_v3(
+                        chain, base_addr, quote_addr, pair_def.base_asset, pair_def.quote_asset,
+                    )
                 elif dex_type in ("velodrome_v2", "aerodrome"):
-                    return self._quote_velodrome(chain, base_addr, quote_addr, dex_type)
+                    return self._quote_velodrome(
+                        chain, base_addr, quote_addr, dex_type, pair_def.base_asset, pair_def.quote_asset,
+                    )
                 raise OnChainMarketError(f"Unknown dex_type: {dex_type}")
 
             # Try once, on RPC failure rotate to next endpoint and retry once.
             try:
                 mid, actual_fee_bps = _do_quote()
-            except OnChainMarketError:
-                raise
+            except OnChainMarketError as e:
+                # If quote returned zero, try bridged stablecoin as fallback.
+                # Many Optimism/Arbitrum pools still use USDC.e/USDbC instead
+                # of native USDC.
+                if "returned zero" in str(e) and quote_addr:
+                    from tokens import CHAIN_TOKENS
+                    tokens = CHAIN_TOKENS.get(chain)
+                    fallback = getattr(tokens, "usdc_e", None) if tokens else None
+                    if fallback and fallback != quote_addr:
+                        _logger.info(
+                            "Trying USDC.e fallback for %s on %s",
+                            dex.name, chain,  # type: ignore[union-attr]
+                        )
+                        quote_addr = fallback
+                        mid, actual_fee_bps = _do_quote()
+                    else:
+                        raise
+                else:
+                    raise
             except Exception:
                 self._rotate_rpc(chain)
                 mid, actual_fee_bps = _do_quote()
 
-            mid = _validate_price(mid, dex.name, chain)  # type: ignore[union-attr]
+            mid = _validate_price(
+                mid,
+                dex.name,  # type: ignore[union-attr]
+                chain,
+                pair_def.pair_name,
+                pair_def.base_asset,
+                pair_def.quote_asset,
+            )
 
             # On-chain quoters return output AFTER the pool fee is deducted.
             # Set fee_included=True so strategy.evaluate_pair skips its own
@@ -274,7 +398,7 @@ class OnChainMarket:
             # display/logging (not for further deduction).
             return MarketQuote(
                 dex=dex.name,  # type: ignore[union-attr]
-                pair=self.config.pair,
+                pair=pair_def.pair_name,
                 buy_price=mid,
                 sell_price=mid,
                 fee_bps=actual_fee_bps,
@@ -288,40 +412,46 @@ class OnChainMarket:
         cache = self.liquidity_cache
 
         # Filter out cached low-liquidity pairs before making RPC calls.
-        active_dexes = []
-        for dex in self.config.dexes:
-            if cache.should_skip(dex.name, dex.chain or ""):  # type: ignore[union-attr]
-                _logger.debug("Cache skip: %s on %s", dex.name, dex.chain)
-            else:
-                active_dexes.append(dex)
+        active_requests: list[tuple[object, _PairDef, str, str]] = []
+        for pair_def in self._pairs:
+            for dex in self.config.dexes:
+                chain = dex.chain or ""  # type: ignore[union-attr]
+                cache_dex = f"{dex.name}:{pair_def.pair_name}"  # type: ignore[union-attr]
+                if cache.should_skip(cache_dex, chain):
+                    _logger.debug("Cache skip: %s on %s", cache_dex, chain)
+                    continue
+                active_requests.append((dex, pair_def, cache_dex, chain))
 
-        if not active_dexes:
+        if not active_requests:
             _logger.warning("All DEXes cached as low-liquidity — returning empty quotes")
             return quotes
 
-        pool = ThreadPoolExecutor(max_workers=len(active_dexes))
+        pool = ThreadPoolExecutor(max_workers=len(active_requests))
         try:
-            futures = {pool.submit(_fetch_one, dex): dex for dex in active_dexes}
+            futures = {
+                pool.submit(_fetch_one, dex, pair_def): (dex, pair_def, cache_dex, chain)
+                for dex, pair_def, cache_dex, chain in active_requests
+            }
             # Hard 15s deadline — prevents indefinite scan hangs.
             import concurrent.futures
             done, not_done = concurrent.futures.wait(futures, timeout=15)
             for future in not_done:
-                dex = futures[future]
-                _logger.warning("RPC timeout (15s): %s on %s", dex.name, dex.chain)
+                dex, pair_def, cache_dex, chain = futures[future]
+                _logger.warning("RPC timeout (15s): %s on %s for %s", dex.name, dex.chain, pair_def.pair_name)
                 future.cancel()
                 cache.mark_skip(
-                    dex.name, dex.chain or "",
+                    cache_dex, chain,
                     "RPC call exceeded 15s deadline",
                     ttl_override=15 * 60,
                 )
             for future in done:
-                dex = futures[future]
+                dex, pair_def, cache_dex, chain = futures[future]
                 try:
                     quotes.append(future.result())
                 except Exception as exc:
                     _logger.warning(
-                        "Skipping %s on %s: %s",
-                        dex.name, dex.chain, exc,  # type: ignore[union-attr]
+                        "Skipping %s on %s for %s: %s",
+                        dex.name, dex.chain, pair_def.pair_name, exc,  # type: ignore[union-attr]
                     )
                     # Use shorter TTL for transient errors (timeout, rate limit)
                     # so we retry sooner. Permanent errors (zero quotes, thin pool)
@@ -333,7 +463,7 @@ class OnChainMarket:
                     ))
                     ttl = 15 * 60 if is_transient else None  # 15 min or default 3h
                     cache.mark_skip(
-                        dex.name, dex.chain or "",  # type: ignore[union-attr]
+                        cache_dex, chain,
                         str(exc),
                         ttl_override=ttl,
                     )
@@ -347,15 +477,15 @@ class OnChainMarket:
     # ------------------------------------------------------------------
 
     def _quote_small_amount(
-        self, chain: str, base: str, quote: str, dex_type: str
+        self, chain: str, base: str, quote: str, dex_type: str, base_symbol: str, quote_symbol: str
     ) -> Decimal:
         """Quote a tiny amount (0.01 WETH) to get the zero-impact reference price.
 
         Compares with the full 1 WETH quote to measure price impact.
         If 0.01 WETH → $22/unit and 1 WETH → $4/unit, the pool is thin.
         """
-        # Use 1% of standard amount (0.01 WETH = 10^16 wei).
-        SMALL_AMOUNT = 10 ** (WETH_DECIMALS - 2)  # 0.01 WETH
+        # Use 1% of the base token's standard unit amount.
+        SMALL_AMOUNT = self._amount_in_for_symbol(base_symbol) // 100
 
         w3 = self._w3[chain]
         quoter_addr = UNISWAP_V3_QUOTER_PER_CHAIN.get(chain, UNISWAP_V3_QUOTER_V2)
@@ -403,18 +533,18 @@ class OnChainMarket:
 
         if amount_out == 0:
             return D("0")
-        # Return per-unit price (scale up by 100 since we quoted 0.01 WETH).
-        return D(amount_out) * D("100") / D(10 ** USDC_DECIMALS)
+        # Return per-unit price (scale up by 100 since we quoted 1% of a token).
+        return self._price_from_amount_out(amount_out, quote_symbol) * D("100")
 
     def _quote_large_amount(
-        self, chain: str, base: str, quote: str, dex_type: str
+        self, chain: str, base: str, quote: str, dex_type: str, base_symbol: str, quote_symbol: str
     ) -> Decimal:
         """Quote 10 WETH to detect thin pools via price impact.
 
         If the per-unit price at 10 WETH is significantly worse than at 1 WETH,
         the pool has insufficient liquidity for real execution.
         """
-        LARGE_AMOUNT = 10 * (10 ** WETH_DECIMALS)  # 10 WETH
+        LARGE_AMOUNT = 10 * self._amount_in_for_symbol(base_symbol)
 
         w3 = self._w3[chain]
 
@@ -476,30 +606,27 @@ class OnChainMarket:
             router = w3.eth.contract(
                 address=Web3.to_checksum_address(router_addr), abi=VELO_ROUTER_ABI,
             )
-            best_out = 0
-            for stable in [False, True]:
-                try:
-                    route = (Web3.to_checksum_address(base), Web3.to_checksum_address(quote), stable, Web3.to_checksum_address(factory))
-                    amounts = router.functions.getAmountsOut(LARGE_AMOUNT, [route]).call()
-                    if len(amounts) >= 2 and amounts[-1] > best_out:
-                        best_out = amounts[-1]
-                except Exception:
-                    continue
+            best_out, _ = self._velo_best_route(router, LARGE_AMOUNT, base, quote, factory)
+            if best_out == 0 and quote_symbol.upper() in ("USDC", "USDT"):
+                from tokens import bridged_usdc_address
+                bridged = bridged_usdc_address(chain)
+                if bridged and bridged.lower() != quote.lower():
+                    best_out, _ = self._velo_best_route(router, LARGE_AMOUNT, base, bridged, factory)
             amount_out = best_out
         else:
             return D("0")
 
         if amount_out == 0:
             return D("0")
-        # Return per-unit price (divide by 10 since we quoted 10 WETH).
-        return D(amount_out) / D("10") / D(10 ** USDC_DECIMALS)
+        # Return per-unit price (divide by 10 since we quoted 10 units).
+        return self._price_from_amount_out(amount_out, quote_symbol) / D("10")
 
     # ------------------------------------------------------------------
     # DEX-specific quoting
     # ------------------------------------------------------------------
 
     def _quote_uniswap_v3(
-        self, chain: str, weth: str, usdc: str
+        self, chain: str, base: str, quote: str, base_symbol: str, quote_symbol: str
     ) -> tuple[Decimal, Decimal]:
         """Get WETH/USDC price from Uniswap V3 QuoterV2.
 
@@ -514,9 +641,9 @@ class OnChainMarket:
             address=Web3.to_checksum_address(quoter_addr),
             abi=UNISWAP_V3_QUOTER_ABI,
         )
-        amount_in = 10 ** WETH_DECIMALS
+        amount_in = self._amount_in_for_symbol(base_symbol)
         best_out, fee_tier = self._try_fee_tiers(
-            f"uniswap_v3:{chain}", quoter, weth, usdc,
+            f"uniswap_v3:{chain}:{base_symbol}/{quote_symbol}", quoter, base, quote,
             amount_in, (100, 500, 3000, 10000),
         )
         if best_out == 0:
@@ -524,10 +651,10 @@ class OnChainMarket:
                 f"Uniswap V3 returned zero for all fee tiers on {chain}."
             )
         actual_fee_bps = D(fee_tier) / D("100")
-        return D(best_out) / D(10 ** USDC_DECIMALS), actual_fee_bps
+        return self._price_from_amount_out(best_out, quote_symbol), actual_fee_bps
 
     def _quote_sushi_v3(
-        self, chain: str, weth: str, usdc: str
+        self, chain: str, base: str, quote: str, base_symbol: str, quote_symbol: str
     ) -> tuple[Decimal, Decimal]:
         """Get WETH/USDC price from SushiSwap V3 QuoterV2.
 
@@ -544,9 +671,9 @@ class OnChainMarket:
             address=Web3.to_checksum_address(quoter_addr),
             abi=SUSHI_V3_QUOTER_ABI,
         )
-        amount_in = 10 ** WETH_DECIMALS
+        amount_in = self._amount_in_for_symbol(base_symbol)
         best_out, fee_tier = self._try_fee_tiers(
-            f"sushi_v3:{chain}", quoter, weth, usdc,
+            f"sushi_v3:{chain}:{base_symbol}/{quote_symbol}", quoter, base, quote,
             amount_in, (100, 500, 3000, 10000),
         )
         if best_out == 0:
@@ -554,10 +681,10 @@ class OnChainMarket:
                 f"SushiSwap V3 returned zero for all fee tiers on {chain}."
             )
         actual_fee_bps = D(fee_tier) / D("100")
-        return D(best_out) / D(10 ** USDC_DECIMALS), actual_fee_bps
+        return self._price_from_amount_out(best_out, quote_symbol), actual_fee_bps
 
     def _quote_pancakeswap_v3(
-        self, chain: str, weth: str, usdc: str
+        self, chain: str, base: str, quote: str, base_symbol: str, quote_symbol: str
     ) -> tuple[Decimal, Decimal]:
         """Get WETH/USDC price from PancakeSwap V3 QuoterV2.
 
@@ -574,9 +701,9 @@ class OnChainMarket:
             address=Web3.to_checksum_address(quoter_addr),
             abi=PANCAKE_V3_QUOTER_ABI,
         )
-        amount_in = 10 ** WETH_DECIMALS
+        amount_in = self._amount_in_for_symbol(base_symbol)
         best_out, fee_tier = self._try_fee_tiers(
-            f"pancakeswap_v3:{chain}", quoter, weth, usdc,
+            f"pancakeswap_v3:{chain}:{base_symbol}/{quote_symbol}", quoter, base, quote,
             amount_in, (100, 500, 2500, 10000),
         )
         if best_out == 0:
@@ -584,10 +711,10 @@ class OnChainMarket:
                 f"PancakeSwap V3 returned zero for all fee tiers on {chain}."
             )
         actual_fee_bps = D(fee_tier) / D("100")
-        return D(best_out) / D(10 ** USDC_DECIMALS), actual_fee_bps
+        return self._price_from_amount_out(best_out, quote_symbol), actual_fee_bps
 
     def _quote_balancer_v2(
-        self, chain: str, weth: str, usdc: str
+        self, chain: str, base: str, quote: str, base_symbol: str, quote_symbol: str
     ) -> tuple[Decimal, Decimal]:
         """Get WETH/USDC price from Balancer V2 Vault queryBatchSwap.
 
@@ -606,15 +733,15 @@ class OnChainMarket:
             abi=BALANCER_VAULT_ABI,
         )
 
-        weth_cs = Web3.to_checksum_address(weth)
-        usdc_cs = Web3.to_checksum_address(usdc)
+        weth_cs = Web3.to_checksum_address(base)
+        usdc_cs = Web3.to_checksum_address(quote)
 
         # Assets must be sorted by address for Balancer.
         assets = sorted([weth_cs, usdc_cs])
         weth_index = assets.index(weth_cs)
         usdc_index = assets.index(usdc_cs)
 
-        amount_in = 10 ** WETH_DECIMALS  # 1 WETH
+        amount_in = self._amount_in_for_symbol(base_symbol)
 
         # kind=0 is GIVEN_IN
         result = vault.functions.queryBatchSwap(
@@ -645,10 +772,10 @@ class OnChainMarket:
                 f"Balancer queryBatchSwap returned non-negative USDC delta: {usdc_delta}"
             )
         amount_out = abs(usdc_delta)
-        return D(amount_out) / D(10 ** USDC_DECIMALS), D("10")  # ~10 bps typical
+        return self._price_from_amount_out(amount_out, quote_symbol), D("10")  # ~10 bps typical
 
     def _quote_quickswap_v3(
-        self, chain: str, weth: str, usdc: str
+        self, chain: str, base: str, quote: str, base_symbol: str, quote_symbol: str
     ) -> tuple[Decimal, Decimal]:
         """Get WETH/USDC price from QuickSwap V3 (Algebra) Quoter.
 
@@ -666,11 +793,11 @@ class OnChainMarket:
             address=Web3.to_checksum_address(quoter_addr),
             abi=QUICKSWAP_QUOTER_ABI,
         )
-        amount_in = 10 ** WETH_DECIMALS
+        amount_in = self._amount_in_for_symbol(base_symbol)
 
         result = quoter.functions.quoteExactInputSingle(
-            Web3.to_checksum_address(weth),
-            Web3.to_checksum_address(usdc),
+            Web3.to_checksum_address(base),
+            Web3.to_checksum_address(quote),
             amount_in,
             0,  # limitSqrtPrice = 0 means no limit
         ).call()
@@ -680,14 +807,15 @@ class OnChainMarket:
             raise OnChainMarketError(
                 f"QuickSwap returned zero on {chain}."
             )
-        return D(amount_out) / D(10 ** USDC_DECIMALS), D("15")  # ~15 bps typical
+        return self._price_from_amount_out(amount_out, quote_symbol), D("15")  # ~15 bps typical
 
     def _quote_camelot_v3(
-        self, chain: str, weth: str, usdc: str
+        self, chain: str, base: str, quote: str, base_symbol: str, quote_symbol: str
     ) -> tuple[Decimal, Decimal]:
         """Get price from Camelot V3 (Algebra) Quoter on Arbitrum.
 
         Returns ``(price, fee_bps)``.  Algebra dynamic fee; estimate reported.
+        Tries Algebra V1 ABI (individual args) first, then V2 (struct args).
         """
         quoter_addr = CAMELOT_QUOTER.get(chain)
         if quoter_addr is None:
@@ -696,33 +824,73 @@ class OnChainMarket:
             )
 
         w3 = self._w3[chain]
-        quoter = w3.eth.contract(
-            address=Web3.to_checksum_address(quoter_addr),
-            abi=QUICKSWAP_QUOTER_ABI,  # Same Algebra interface
-        )
-        amount_in = 10 ** WETH_DECIMALS
+        amount_in = self._amount_in_for_symbol(base_symbol)
+        base_cs = Web3.to_checksum_address(base)
+        quote_cs = Web3.to_checksum_address(quote)
 
-        result = quoter.functions.quoteExactInputSingle(
-            Web3.to_checksum_address(weth),
-            Web3.to_checksum_address(usdc),
-            amount_in,
-            0,
-        ).call()
-
-        amount_out = result[0]
-        if amount_out == 0:
-            raise OnChainMarketError(
-                f"Camelot returned zero on {chain}."
+        # Try Algebra V1 ABI (individual args — QuickSwap style).
+        try:
+            quoter_v1 = w3.eth.contract(
+                address=Web3.to_checksum_address(quoter_addr),
+                abi=QUICKSWAP_QUOTER_ABI,
             )
-        return D(amount_out) / D(10 ** USDC_DECIMALS), D("15")  # ~15 bps typical
+            result = quoter_v1.functions.quoteExactInputSingle(
+                base_cs, quote_cs, amount_in, 0,
+            ).call()
+            amount_out = result[0]
+            if amount_out > 0:
+                return self._price_from_amount_out(amount_out, quote_symbol), D("15")
+        except Exception:
+            pass
+
+        # Try Algebra V2 ABI (struct args — newer Camelot deployments).
+        try:
+            quoter_v2 = w3.eth.contract(
+                address=Web3.to_checksum_address(quoter_addr),
+                abi=ALGEBRA_V2_QUOTER_ABI,
+            )
+            result = quoter_v2.functions.quoteExactInputSingle(
+                (base_cs, quote_cs, amount_in, 0),
+            ).call()
+            amount_out = result[0]
+            if amount_out > 0:
+                return self._price_from_amount_out(amount_out, quote_symbol), D("15")
+        except Exception:
+            pass
+
+        raise OnChainMarketError(f"Camelot returned zero on {chain} (tried V1 + V2 ABI).")
+
+    @staticmethod
+    def _velo_best_route(
+        router, amount_in: int, base: str, quote: str, factory: str,
+    ) -> tuple[int, bool]:
+        """Try volatile + stable Solidly routes, return (best_out, best_stable)."""
+        best_out = 0
+        best_stable = False
+        for stable in [False, True]:
+            try:
+                route = (
+                    Web3.to_checksum_address(base),
+                    Web3.to_checksum_address(quote),
+                    stable,
+                    Web3.to_checksum_address(factory),
+                )
+                amounts = router.functions.getAmountsOut(amount_in, [route]).call()
+                if len(amounts) >= 2 and amounts[-1] > best_out:
+                    best_out = amounts[-1]
+                    best_stable = stable
+            except Exception:
+                continue
+        return best_out, best_stable
 
     def _quote_velodrome(
-        self, chain: str, weth: str, usdc: str, dex_type: str
+        self, chain: str, base: str, quote: str, dex_type: str, base_symbol: str, quote_symbol: str
     ) -> tuple[Decimal, Decimal]:
         """Get price from Velodrome V2 (Optimism) or Aerodrome (Base).
 
         Returns ``(price, fee_bps)``.  Uses getAmountsOut with a Route struct.
         Tries both volatile and stable pool types, returns the best.
+        Falls back to bridged USDC (USDC.e / USDbC) if native USDC returns zero.
         """
         if dex_type == "aerodrome":
             router_addr = AERODROME_ROUTER.get(chain)
@@ -743,27 +911,24 @@ class OnChainMarket:
             address=Web3.to_checksum_address(router_addr),
             abi=VELO_ROUTER_ABI,
         )
-        amount_in = 10 ** WETH_DECIMALS
+        amount_in = self._amount_in_for_symbol(base_symbol)
 
-        best_out = 0
-        # Try both volatile (False) and stable (True) pool types.
-        for stable in [False, True]:
-            try:
-                route = (
-                    Web3.to_checksum_address(weth),
-                    Web3.to_checksum_address(usdc),
-                    stable,
-                    Web3.to_checksum_address(factory),
+        best_out, best_stable = self._velo_best_route(
+            router, amount_in, base, quote, factory,
+        )
+
+        # Fallback: try bridged USDC if native returned zero.
+        if best_out == 0 and quote_symbol.upper() in ("USDC", "USDT"):
+            from tokens import bridged_usdc_address
+            bridged = bridged_usdc_address(chain)
+            if bridged and bridged.lower() != quote.lower():
+                best_out, best_stable = self._velo_best_route(
+                    router, amount_in, base, bridged, factory,
                 )
-                amounts = router.functions.getAmountsOut(amount_in, [route]).call()
-                if len(amounts) >= 2 and amounts[-1] > best_out:
-                    best_out = amounts[-1]
-            except Exception:
-                continue
 
+        dex_label = "Aerodrome" if dex_type == "aerodrome" else "Velodrome"
         if best_out == 0:
-            raise OnChainMarketError(
-                f"{'Aerodrome' if dex_type == 'aerodrome' else 'Velodrome'} "
-                f"returned zero on {chain}."
-            )
-        return D(best_out) / D(10 ** USDC_DECIMALS), D("20")  # ~20 bps typical
+            raise OnChainMarketError(f"{dex_label} returned zero on {chain}.")
+
+        fee_bps = D("2") if best_stable else D("20")
+        return self._price_from_amount_out(best_out, quote_symbol), fee_bps

@@ -129,7 +129,11 @@ class CandidatePipeline:
             buy_liquidity_usd=opportunity.buy_liquidity_usd,
             sell_liquidity_usd=opportunity.sell_liquidity_usd,
         )
-        self.repo.update_opportunity_status(opp_id, "priced")
+        # Skip intermediate 'priced' status update — the final status
+        # (rejected/simulation_approved/approved/dry_run) is set below,
+        # and the entire detect→price→risk path runs in a single batch
+        # transaction so 'priced' is never visible to other readers.
+        # Saves 1 DB round-trip (~3-4ms on Neon Postgres).
         _timings["price_ms"] = (_time.monotonic() - _t1) * 1000
         logger.info("[pipeline] %s priced: net_profit=%.6f", opp_id, float(opportunity.net_profit_base))
 

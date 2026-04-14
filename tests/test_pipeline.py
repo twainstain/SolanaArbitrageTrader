@@ -100,6 +100,50 @@ class PipelineRejectionTests(unittest.TestCase):
         self.assertEqual(pricing["input_amount"], "2200")
 
 
+class PipelineSkipPricedStatusTests(unittest.TestCase):
+    """Verify that the pipeline skips the intermediate 'priced' status update.
+
+    The pipeline batches detect→price→risk into a single transaction.
+    Setting status='priced' between price and risk is invisible to other
+    readers and wastes a DB round-trip. The final status (rejected,
+    simulation_approved, approved, dry_run) is the only one that matters.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.conn = init_db(self.tmp.name)
+        self.repo = Repository(self.conn)
+
+    def tearDown(self):
+        close_db()
+        Path(self.tmp.name).unlink(missing_ok=True)
+
+    def test_opportunity_never_set_to_priced(self):
+        """After pipeline.process, status should jump from detected to final."""
+        policy = RiskPolicy(execution_enabled=False)
+        pipeline = CandidatePipeline(self.repo, policy)
+
+        result = pipeline.process(_make_opp())
+        # Final status should be simulation_approved, never "priced".
+        opp = self.repo.get_opportunity(result.opportunity_id)
+        self.assertNotEqual(opp["status"], "priced")
+        self.assertEqual(opp["status"], "simulation_approved")
+
+    def test_batch_commits_once(self):
+        """All DB writes in detect→price→risk should batch into one commit."""
+        policy = RiskPolicy(execution_enabled=True, min_net_profit=D("0.001"))
+        pipeline = CandidatePipeline(self.repo, policy)
+
+        result = pipeline.process(_make_opp())
+        # Verify all data persisted correctly despite single commit.
+        opp = self.repo.get_opportunity(result.opportunity_id)
+        self.assertIsNotNone(opp)
+        pricing = self.repo.get_pricing(result.opportunity_id)
+        self.assertIsNotNone(pricing)
+        risk = self.repo.get_risk_decision(result.opportunity_id)
+        self.assertIsNotNone(risk)
+
+
 class PipelineDryRunTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)

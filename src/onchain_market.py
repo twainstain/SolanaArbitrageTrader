@@ -301,8 +301,11 @@ class OnChainMarket:
             ).call()
             return result[0]
 
-        # Use cached tier if fresh (< 60s old).
-        if cached is not None and (_time.monotonic() - cached[1]) < 60.0:
+        # Use cached tier if fresh (< 5 min).  Fee tiers are immutable in V3
+        # pools, so the "best" tier only changes if liquidity migrates between
+        # pools — rare enough that 5-minute staleness is acceptable.
+        # Saves 3 RPC calls per DEX per 5-minute window vs 60s TTL.
+        if cached is not None and (_time.monotonic() - cached[1]) < 300.0:
             try:
                 return _call_tier(cached[0]), cached[0]
             except Exception:

@@ -740,9 +740,9 @@ class FeeTierCacheTests(unittest.TestCase):
         self.assertEqual(call_count, 1)  # Only cached tier tried
 
     def test_stale_cache_retries_all_tiers(self) -> None:
-        """After 60s the cache expires and all tiers are retried."""
+        """After 5 minutes the cache expires and all tiers are retried."""
         import time
-        self.market._best_fee["test:eth"] = (500, time.monotonic() - 61)
+        self.market._best_fee["test:eth"] = (500, time.monotonic() - 301)
 
         call_count = 0
         def mock_call():
@@ -1071,6 +1071,40 @@ class TieredTVLCacheTTLTests(unittest.TestCase):
         )
         # Should NOT return the cached $50K — should re-estimate.
         self.assertNotEqual(result, Decimal("50000"))
+
+
+class FeeTierCacheTTLTests(unittest.TestCase):
+    """Tests for the extended fee tier cache TTL (5 minutes)."""
+
+    @patch("onchain_market.Web3")
+    def test_cached_tier_used_within_5_minutes(self, mock_web3_cls: MagicMock) -> None:
+        """Fee tier cache should hold for 5 minutes, not 60s."""
+        config = _make_onchain_config()
+        mock_web3_cls.HTTPProvider = MagicMock()
+        mock_web3_cls.to_checksum_address = lambda x: x
+        market = OnChainMarket(config)
+
+        import time
+
+        # Pre-populate cache with fee tier 500, 200 seconds ago.
+        # Old 60s TTL would expire this; new 300s TTL should keep it.
+        market._best_fee["uniswap_v3:ethereum:WETH/USDC"] = (500, time.monotonic() - 200)
+
+        mock_quoter = MagicMock()
+        mock_quoter.functions.quoteExactInputSingle.return_value.call.return_value = [
+            2200_000_000, 0, 0, 150_000
+        ]
+        mock_w3 = MagicMock()
+        mock_w3.eth.contract.return_value = mock_quoter
+        market._w3 = {"ethereum": mock_w3}
+
+        out, fee = market._try_fee_tiers(
+            "uniswap_v3:ethereum:WETH/USDC", mock_quoter,
+            "0xweth", "0xusdc", 10**18, (100, 500, 3000, 10000),
+        )
+        # Should use cached tier (500), making exactly 1 call.
+        self.assertEqual(fee, 500)
+        self.assertEqual(mock_quoter.functions.quoteExactInputSingle.call_count, 1)
 
 
 if __name__ == "__main__":

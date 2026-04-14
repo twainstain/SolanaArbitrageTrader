@@ -112,5 +112,89 @@ class ChainSummaryTests(_DashboardTestBase):
         self.assertEqual(resp.status_code, 200)
 
 
+class ProfitAggregationTests(_DashboardTestBase):
+    """Test profit aggregation in time windows."""
+
+    def _seed_with_pricing(self):
+        """Create opportunities with pricing data."""
+        for i, (chain, profit) in enumerate([
+            ("optimism", D("0.08")),
+            ("optimism", D("0.05")),
+            ("arbitrum", D("0.12")),
+            ("ethereum", D("-0.002")),  # negative — should be excluded from profit
+        ]):
+            opp_id = self.repo.create_opportunity(
+                pair="WETH/USDC", chain=chain,
+                buy_dex=f"Uni-{chain.title()}", sell_dex=f"Sushi-{chain.title()}",
+                spread_bps=D("5.0"),
+            )
+            self.repo.save_pricing(
+                opp_id=opp_id,
+                input_amount=D("2200"), estimated_output=D("2300"),
+                fee_cost=D("10"), slippage_cost=D("3"),
+                gas_estimate=D("0.002"), expected_net_profit=profit,
+            )
+            self.repo.update_opportunity_status(opp_id, "simulation_approved")
+
+    def test_profit_in_window_response(self):
+        self._seed_with_pricing()
+        resp = self.client.get("/dashboard/window/24h")
+        data = resp.json()
+        self.assertIn("profit", data)
+        p = data["profit"]
+        self.assertIn("total_expected_profit", p)
+        self.assertIn("avg_expected_profit", p)
+        self.assertIn("max_expected_profit", p)
+        self.assertIn("priced_count", p)
+
+    def test_profit_totals_correct(self):
+        self._seed_with_pricing()
+        resp = self.client.get("/dashboard/window/24h")
+        p = resp.json()["profit"]
+        # Only positive profits: 0.08 + 0.05 + 0.12 = 0.25
+        self.assertAlmostEqual(p["total_expected_profit"], 0.25, places=4)
+        self.assertEqual(p["priced_count"], 3)  # 3 profitable, 1 negative excluded
+
+    def test_profit_max_correct(self):
+        self._seed_with_pricing()
+        resp = self.client.get("/dashboard/window/24h")
+        p = resp.json()["profit"]
+        self.assertAlmostEqual(p["max_expected_profit"], 0.12, places=4)
+
+    def test_profit_avg_correct(self):
+        self._seed_with_pricing()
+        resp = self.client.get("/dashboard/window/24h")
+        p = resp.json()["profit"]
+        # avg of 0.08, 0.05, 0.12 = 0.0833...
+        self.assertAlmostEqual(p["avg_expected_profit"], 0.0833, places=3)
+
+    def test_profit_filtered_by_chain(self):
+        self._seed_with_pricing()
+        resp = self.client.get("/dashboard/window/24h?chain=optimism")
+        p = resp.json()["profit"]
+        # Optimism: 0.08 + 0.05 = 0.13
+        self.assertAlmostEqual(p["total_expected_profit"], 0.13, places=4)
+        self.assertEqual(p["priced_count"], 2)
+
+    def test_profit_empty_when_no_data(self):
+        resp = self.client.get("/dashboard/window/24h")
+        p = resp.json()["profit"]
+        self.assertEqual(p["total_expected_profit"], 0)
+        self.assertEqual(p["priced_count"], 0)
+
+    def test_all_windows_include_profit(self):
+        self._seed_with_pricing()
+        resp = self.client.get("/dashboard/windows")
+        data = resp.json()
+        for key in ["5m", "15m", "1h", "24h"]:
+            self.assertIn("profit", data[key], f"Missing profit in {key}")
+
+    def test_dashboard_html_contains_profit_labels(self):
+        resp = self.client.get("/dashboard")
+        self.assertIn("Expected Profit", resp.text)
+        self.assertIn("Avg Profit", resp.text)
+        self.assertIn("Best Single Opp", resp.text)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -220,10 +220,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         const o = data.opportunities || {};
         const t = data.trades || {};
         const p = data.profit || {};
-        const totalProfit = Number(p.total_expected_profit || 0);
-        const avgProfit = Number(p.avg_expected_profit || 0);
-        const maxProfit = Number(p.max_expected_profit || 0);
+        const totalExpected = Number(p.total_expected_profit || 0);
+        const avgExpected = Number(p.avg_expected_profit || 0);
+        const maxExpected = Number(p.max_expected_profit || 0);
         const profitCount = p.priced_count || 0;
+        const totalRealized = Number(t.total_profit || 0);
+        const tradeCount = t.total_trades || 0;
+        const hasRealTrades = tradeCount > 0;
+
+        // Show realized profit when we have actual trades, expected otherwise
+        const mainProfit = hasRealTrades ? totalRealized : totalExpected;
+        const mainLabel = hasRealTrades ? 'Realized Profit' : 'Expected Profit';
+        const mainClass = mainProfit > 0 ? 'status-ok' : mainProfit < 0 ? 'status-bad' : '';
+
         grid.innerHTML = `
             <div class="card">
                 <div class="card-title">Opportunities (${currentWindow})</div>
@@ -231,29 +240,36 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 <div class="card-sub">${profitCount} profitable</div>
             </div>
             <div class="card">
-                <div class="card-title">Total Expected Profit (${currentWindow})</div>
-                <div class="card-value ${totalProfit > 0 ? 'status-ok' : ''}">${totalProfit.toFixed(6)} ETH</div>
-                <div class="card-sub">~$${(totalProfit * 2300).toFixed(2)}</div>
+                <div class="card-title">${mainLabel} (${currentWindow})</div>
+                <div class="card-value ${mainClass}">${mainProfit.toFixed(6)} ETH</div>
+                <div class="card-sub">~$${(mainProfit * 2300).toFixed(2)}</div>
             </div>
             <div class="card">
                 <div class="card-title">Avg Profit / Opp (${currentWindow})</div>
-                <div class="card-value">${avgProfit.toFixed(6)} ETH</div>
-                <div class="card-sub">~$${(avgProfit * 2300).toFixed(2)}</div>
+                <div class="card-value">${avgExpected.toFixed(6)} ETH</div>
+                <div class="card-sub">~$${(avgExpected * 2300).toFixed(2)}</div>
             </div>
             <div class="card">
                 <div class="card-title">Best Single Opp (${currentWindow})</div>
-                <div class="card-value">${maxProfit.toFixed(6)} ETH</div>
-                <div class="card-sub">~$${(maxProfit * 2300).toFixed(2)}</div>
+                <div class="card-value">${maxExpected.toFixed(6)} ETH</div>
+                <div class="card-sub">~$${(maxExpected * 2300).toFixed(2)}</div>
             </div>
             <div class="card">
-                <div class="card-title">Trades Executed (${currentWindow})</div>
-                <div class="card-value">${t.total_trades || 0}</div>
-                <div class="card-sub">Realized: ${Number(t.total_profit || 0).toFixed(6)} ETH</div>
+                <div class="card-title">Trades (${currentWindow})</div>
+                <div class="card-value">${tradeCount}</div>
+                <div class="card-sub">${t.successful || 0} ok / ${t.reverted || 0} reverted</div>
             </div>
+            ${hasRealTrades ? `
             <div class="card">
-                <div class="card-title">Success / Revert (${currentWindow})</div>
-                <div class="card-value">${t.successful || 0} / ${t.reverted || 0}</div>
-            </div>
+                <div class="card-title">Expected vs Realized</div>
+                <div class="card-value">${((totalRealized / (totalExpected || 1)) * 100).toFixed(1)}%</div>
+                <div class="card-sub">Expected: ${totalExpected.toFixed(6)} | Realized: ${totalRealized.toFixed(6)}</div>
+            </div>` : `
+            <div class="card">
+                <div class="card-title">Mode</div>
+                <div class="card-value status-warn">SIMULATION</div>
+                <div class="card-sub">Enable execution to see realized profit</div>
+            </div>`}
         `;
     }
 

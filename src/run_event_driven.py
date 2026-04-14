@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import threading
 import time
@@ -429,7 +430,7 @@ def main() -> None:
     if dispatcher.backend_count == 0:
         logger.warning("Alerting: no backends configured")
 
-    dashboard_url = f"http://localhost:{args.port}/dashboard"
+    dashboard_url = os.environ.get("DASHBOARD_URL", f"http://localhost:{args.port}/dashboard")
     alerter = SmartAlerter(repo=repo, telegram=telegram, discord=discord, gmail=gmail, dashboard_url=dashboard_url)
     alerter.start_background_hourly()
 

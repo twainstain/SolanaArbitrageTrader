@@ -187,7 +187,8 @@ def main() -> None:
     if dispatcher.backend_count == 0:
         logger.warning("Alerting: no backends configured (set TELEGRAM_BOT_TOKEN, DISCORD_WEBHOOK_URL, or GMAIL_ADDRESS)")
 
-    dashboard_url = f"http://localhost:{args.port}/dashboard"
+    import os
+    dashboard_url = os.environ.get("DASHBOARD_URL", f"http://localhost:{args.port}/dashboard")
     alerter = SmartAlerter(repo=repo, telegram=telegram, gmail=gmail, dashboard_url=dashboard_url)
     alerter.start_background_hourly()
 

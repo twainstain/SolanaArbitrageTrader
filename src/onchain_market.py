@@ -198,6 +198,10 @@ class OnChainMarket:
         self._rpc_index: dict[str, int] = {}  # chain → current URL index
         # Cache best fee tier per (dex_type, chain) — avoids trying all 4 tiers each scan.
         self._best_fee: dict[str, tuple[int, float]] = {}  # key → (fee, timestamp)
+        # Cache liquidity estimates — avoids extra RPC calls for _estimate_liquidity_usd.
+        # key: "dex_type:chain:base:quote" → (tvl_decimal, timestamp)
+        self._tvl_cache: dict[str, tuple[Decimal, float]] = {}
+        self._TVL_CACHE_TTL = 300.0  # 5 minutes
 
         for dex in config.dexes:
             chain = dex.chain
@@ -584,11 +588,14 @@ class OnChainMarket:
         _ZERO = D("0")
         if normal_price <= _ZERO:
             return _ZERO
+
+        # Check TVL cache — avoids extra RPC calls for liquidity estimation.
+        tvl_key = f"{dex_type}:{chain}:{base}:{quote}".lower()
+        cached = self._tvl_cache.get(tvl_key)
+        if cached is not None and (_time.monotonic() - cached[1]) < self._TVL_CACHE_TTL:
+            return cached[0]
+
         try:
-            # Quote 1% of a token (e.g., 0.01 WETH) as zero-impact reference.
-            # 1% is small enough to have negligible impact in any real pool,
-            # but large enough that the quoter doesn't return 0 due to dust
-            # thresholds or rounding.
             small_price = self._quote_small_amount(
                 chain, base, quote, dex_type, base_symbol, quote_symbol,
             )
@@ -599,14 +606,15 @@ class OnChainMarket:
 
         impact = abs(small_price - normal_price) / small_price
         if impact <= _ZERO:
-            # Zero impact = pool is deep enough that 1 full token doesn't
-            # move the price.  Return sentinel (well above $1M filter).
+            self._tvl_cache[tvl_key] = (self._DEEP_POOL_TVL, _time.monotonic())
             return self._DEEP_POOL_TVL
 
         trade_size_usd = normal_price  # 1 unit of base at this price
         tvl = trade_size_usd / (TWO * impact)
         # Cap at $10B to avoid absurd estimates from near-zero impact.
-        return min(tvl, D("10000000000"))
+        tvl = min(tvl, D("10000000000"))
+        self._tvl_cache[tvl_key] = (tvl, _time.monotonic())
+        return tvl
 
     # ------------------------------------------------------------------
     # Price impact estimation

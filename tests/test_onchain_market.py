@@ -607,6 +607,81 @@ class LiquidityEstimationTests(unittest.TestCase):
         self.assertEqual(tvl, OnChainMarket._DEEP_POOL_TVL)
 
 
+class TvlCacheTests(unittest.TestCase):
+    """Tests for the liquidity estimation cache in OnChainMarket."""
+
+    @patch("onchain_market.Web3")
+    def setUp(self, mock_web3: MagicMock) -> None:
+        mock_web3.HTTPProvider.return_value = MagicMock()
+        mock_web3.to_checksum_address = lambda x: x
+        self.config = _make_onchain_config()
+        self.market = OnChainMarket(self.config, rpc_overrides={"ethereum": "http://fake"})
+
+    def test_cache_hit_skips_rpc(self) -> None:
+        """Second call within TTL should use cached TVL, not call _quote_small_amount."""
+        from decimal import Decimal as D
+        call_count = 0
+        original_quote = self.market._quote_small_amount
+
+        def counting_quote(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return D("2200")
+
+        with patch.object(self.market, "_quote_small_amount", side_effect=counting_quote):
+            # First call — should call _quote_small_amount.
+            tvl1 = self.market._estimate_liquidity_usd(
+                "ethereum", "0xweth", "0xusdc", "uniswap_v3",
+                "WETH", "USDC", D("2199"),
+            )
+            self.assertEqual(call_count, 1)
+
+            # Second call — should use cache, not call _quote_small_amount.
+            tvl2 = self.market._estimate_liquidity_usd(
+                "ethereum", "0xweth", "0xusdc", "uniswap_v3",
+                "WETH", "USDC", D("2199"),
+            )
+            self.assertEqual(call_count, 1)  # No additional call
+            self.assertEqual(tvl1, tvl2)
+
+    def test_cache_expiry_retries_rpc(self) -> None:
+        """After TTL expires, _quote_small_amount should be called again."""
+        from decimal import Decimal as D
+        import time
+
+        # Pre-populate cache with expired entry.
+        tvl_key = "uniswap_v3:ethereum:0xweth:0xusdc"
+        self.market._tvl_cache[tvl_key] = (D("5000000"), time.monotonic() - 301)
+
+        call_count = 0
+
+        def counting_quote(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return D("2200")
+
+        with patch.object(self.market, "_quote_small_amount", side_effect=counting_quote):
+            self.market._estimate_liquidity_usd(
+                "ethereum", "0xweth", "0xusdc", "uniswap_v3",
+                "WETH", "USDC", D("2199"),
+            )
+            self.assertEqual(call_count, 1)  # Expired cache → fresh call
+
+    def test_cache_stores_deep_pool_sentinel(self) -> None:
+        """Zero impact should cache the deep pool sentinel."""
+        from decimal import Decimal as D
+
+        with patch.object(self.market, "_quote_small_amount", return_value=D("2200")):
+            tvl = self.market._estimate_liquidity_usd(
+                "ethereum", "0xweth", "0xusdc", "uniswap_v3",
+                "WETH", "USDC", D("2200"),
+            )
+        self.assertEqual(tvl, OnChainMarket._DEEP_POOL_TVL)
+        tvl_key = "uniswap_v3:ethereum:0xweth:0xusdc"
+        self.assertIn(tvl_key, self.market._tvl_cache)
+        self.assertEqual(self.market._tvl_cache[tvl_key][0], OnChainMarket._DEEP_POOL_TVL)
+
+
 class FeeTierCacheTests(unittest.TestCase):
     """Tests for the fee tier caching in OnChainMarket._try_fee_tiers."""
 

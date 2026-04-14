@@ -982,5 +982,38 @@ class QuoteSmallAmountFeeCacheTests(unittest.TestCase):
         self.assertEqual(result, Decimal("0"))
 
 
+class PersistentThreadPoolTests(unittest.TestCase):
+    """Tests for persistent ThreadPoolExecutor in OnChainMarket."""
+
+    @patch("onchain_market.Web3")
+    def test_pool_created_on_init(self, mock_web3_cls: MagicMock) -> None:
+        """OnChainMarket should create a persistent thread pool at init."""
+        config = _make_onchain_config()
+        mock_web3_cls.HTTPProvider = MagicMock()
+        mock_web3_cls.to_checksum_address = lambda x: x
+        market = OnChainMarket(config)
+
+        from concurrent.futures import ThreadPoolExecutor
+        self.assertIsInstance(market._pool, ThreadPoolExecutor)
+
+    @patch("onchain_market.Web3")
+    def test_pool_reused_across_calls(self, mock_web3_cls: MagicMock) -> None:
+        """The thread pool should be the same instance across get_quotes calls."""
+        config = _make_onchain_config()
+        mock_web3_cls.HTTPProvider = MagicMock()
+        mock_web3_cls.to_checksum_address = lambda x: x
+        market = OnChainMarket(config)
+
+        pool_id = id(market._pool)
+
+        # Mock the market so get_quotes doesn't make real RPC calls.
+        # Just verify the pool isn't recreated.
+        market.liquidity_cache.mark_skip("Uniswap-Eth:WETH/USDC", "ethereum", "test")
+        market.liquidity_cache.mark_skip("Sushi-Eth:WETH/USDC", "ethereum", "test")
+        market.get_quotes()  # All cached, no futures submitted
+
+        self.assertEqual(id(market._pool), pool_id)
+
+
 if __name__ == "__main__":
     unittest.main()

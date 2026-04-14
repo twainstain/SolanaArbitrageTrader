@@ -24,7 +24,7 @@ def _make_opp(**overrides) -> Opportunity:
         trade_size=D("1"), cost_to_buy_quote=D("2200"),
         proceeds_from_sell_quote=D("2210"), gross_profit_quote=D("10"),
         net_profit_quote=D("8"), net_profit_base=D("0.005"),
-        gross_spread_pct=D("0.45"), dex_fee_cost_quote=D("2"),
+        gross_spread_pct=D("3.0"), dex_fee_cost_quote=D("2"),
         slippage_cost_quote=D("1"), gas_cost_base=D("0.001"),
         liquidity_score=0.8, warning_flags=(),
     )

@@ -19,6 +19,7 @@ def _make_opp(**overrides) -> Opportunity:
         trade_size=D("1"), cost_to_buy_quote=D("3001"),
         proceeds_from_sell_quote=D("3079"), gross_profit_quote=D("78"),
         net_profit_quote=D("50"), net_profit_base=D("0.005"),
+        gross_spread_pct=D("3.0"),
         gas_cost_base=D("0.001"), liquidity_score=0.8,
         warning_flags=(),
     )
@@ -132,11 +133,49 @@ class ExposureLimitTests(unittest.TestCase):
         self.assertTrue(verdict.approved)
 
 
+class MinSpreadTests(unittest.TestCase):
+    """Tests for the minimum spread percentage rule."""
+
+    def test_spread_below_min_rejected(self) -> None:
+        policy = RiskPolicy(execution_enabled=True, min_spread_pct=D("2.0"))
+        verdict = policy.evaluate(_make_opp(gross_spread_pct=D("1.5")))
+        self.assertFalse(verdict.approved)
+        self.assertEqual(verdict.reason, "below_min_spread")
+
+    def test_spread_above_min_approved(self) -> None:
+        policy = RiskPolicy(execution_enabled=True, min_spread_pct=D("2.0"))
+        verdict = policy.evaluate(_make_opp(gross_spread_pct=D("3.0")))
+        self.assertTrue(verdict.approved)
+
+    def test_spread_exactly_at_min_approved(self) -> None:
+        policy = RiskPolicy(execution_enabled=True, min_spread_pct=D("2.0"))
+        verdict = policy.evaluate(_make_opp(gross_spread_pct=D("2.0")))
+        self.assertTrue(verdict.approved)
+
+    def test_default_min_spread_is_2_percent(self) -> None:
+        policy = RiskPolicy()
+        self.assertEqual(policy.min_spread_pct, D("2.0"))
+
+    def test_custom_min_spread(self) -> None:
+        policy = RiskPolicy(min_spread_pct=D("5.0"))
+        self.assertEqual(policy.min_spread_pct, D("5.0"))
+
+    def test_thin_spread_rejected_even_if_profitable(self) -> None:
+        """A spread of 0.5% should be rejected even with good profit."""
+        policy = RiskPolicy(execution_enabled=True, min_spread_pct=D("2.0"))
+        verdict = policy.evaluate(_make_opp(
+            gross_spread_pct=D("0.5"), net_profit_base=D("0.01"),
+        ))
+        self.assertFalse(verdict.approved)
+        self.assertEqual(verdict.reason, "below_min_spread")
+
+
 class ToDictTests(unittest.TestCase):
     def test_serializes_all_fields(self) -> None:
         policy = RiskPolicy()
         d = policy.to_dict()
         self.assertIn("min_net_profit", d)
+        self.assertIn("min_spread_pct", d)
         self.assertIn("execution_enabled", d)
         self.assertIn("max_trades_per_hour", d)
         self.assertEqual(d["execution_enabled"], False)

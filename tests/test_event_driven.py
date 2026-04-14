@@ -22,7 +22,7 @@ from risk.policy import RiskPolicy
 D = Decimal
 
 
-def _make_opp(pair="WETH/USDC", chain="ethereum", spread=D("0.5"),
+def _make_opp(pair="WETH/USDC", chain="ethereum", spread=D("3.0"),
               profit=D("0.005"), **kw) -> Opportunity:
     defaults = dict(
         pair=pair, buy_dex="Uni", sell_dex="Sushi",

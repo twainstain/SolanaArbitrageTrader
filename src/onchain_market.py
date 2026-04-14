@@ -210,27 +210,36 @@ class OnChainMarket:
 
             mid = _validate_price(mid, dex.name, chain)  # type: ignore[union-attr]
 
-            # --- Price impact check: estimate pool depth ---
-            # Quote a tiny amount (0.01 WETH) to get the "zero-impact" price.
-            # Compare with the full trade size price. Large divergence = thin pool.
-            # This catches Avalanche returning $400/WETH when it has $5K liquidity.
+            # --- Thin pool detection: quote 10 WETH and compare per-unit price ---
+            # If quoting 10x the amount gives a significantly worse per-unit price,
+            # the pool has thin liquidity and the 1 WETH quote is misleading.
+            # This catches SushiSwap Optimism returning $2152 when the real market
+            # is $2364 — the pool has so little liquidity that even 1 WETH moves it.
             estimated_liquidity = D("0")
             try:
-                small_mid = self._quote_small_amount(chain, base_addr, quote_addr, dex_type)
-                if small_mid > D("0") and mid > D("0"):
-                    # Price impact = how much per-unit price changes with trade size.
-                    impact_pct = abs(small_mid - mid) / small_mid * D("100")
+                large_mid = self._quote_large_amount(chain, base_addr, quote_addr, dex_type)
+                if large_mid > D("0") and mid > D("0"):
+                    # Per-unit price impact: how much worse is the 10x quote?
+                    impact_pct = abs(mid - large_mid) / mid * D("100")
                     if impact_pct > D("5"):
-                        # >5% price impact = very thin pool. Estimate liquidity.
-                        # Rough: if 1 WETH moves price 5%, pool has ~20 WETH worth.
-                        estimated_liquidity = mid * D("100") / max(impact_pct, D("1"))
-                    elif impact_pct > D("1"):
+                        # >5% price impact at 10 WETH = very thin pool.
+                        # Set liquidity to ~0 so the risk policy rejects it.
+                        estimated_liquidity = D("1000")  # $1K — below min_liquidity_usd
+                        _logger.warning(
+                            "Thin pool: %s on %s — 1 WETH=$%s, 10 WETH=$%s (%.1f%% impact)",
+                            dex.name, chain, float(mid), float(large_mid),  # type: ignore[union-attr]
+                            float(impact_pct),
+                        )
+                    elif impact_pct > D("2"):
+                        # 2-5% impact = moderate liquidity
                         estimated_liquidity = mid * D("500") / max(impact_pct, D("1"))
                     else:
-                        # <1% impact = deep pool.
+                        # <2% impact = deep pool
                         estimated_liquidity = D("10000000")  # $10M+
+            except OnChainMarketError:
+                raise
             except Exception:
-                pass  # Can't estimate — leave at 0
+                pass  # Can't estimate — leave at 0, don't block
 
             # Model bid-ask spread as symmetric around mid: buy = mid + half, sell = mid - half.
             # The DEX fee tier approximates the full spread (market maker compensation).
@@ -345,6 +354,64 @@ class OnChainMarket:
             return D("0")
         # Return per-unit price (scale up by 100 since we quoted 0.01 WETH).
         return D(amount_out) * D("100") / D(10 ** USDC_DECIMALS)
+
+    def _quote_large_amount(
+        self, chain: str, base: str, quote: str, dex_type: str
+    ) -> Decimal:
+        """Quote 10 WETH to detect thin pools via price impact.
+
+        If the per-unit price at 10 WETH is significantly worse than at 1 WETH,
+        the pool has insufficient liquidity for real execution.
+        """
+        LARGE_AMOUNT = 10 * (10 ** WETH_DECIMALS)  # 10 WETH
+
+        w3 = self._w3[chain]
+
+        if dex_type == "quickswap_v3":
+            qaddr = QUICKSWAP_QUOTER.get(chain)
+            if not qaddr:
+                return D("0")
+            quoter = w3.eth.contract(
+                address=Web3.to_checksum_address(qaddr), abi=QUICKSWAP_QUOTER_ABI,
+            )
+            result = quoter.functions.quoteExactInputSingle(
+                Web3.to_checksum_address(base), Web3.to_checksum_address(quote),
+                LARGE_AMOUNT, 0,
+            ).call()
+            amount_out = result[0]
+        elif dex_type in ("uniswap_v3", "sushi_v3", "pancakeswap_v3"):
+            if dex_type == "sushi_v3":
+                qaddr = SUSHI_V3_QUOTER.get(chain)
+            elif dex_type == "pancakeswap_v3":
+                qaddr = PANCAKE_V3_QUOTER.get(chain)
+            else:
+                qaddr = UNISWAP_V3_QUOTER_PER_CHAIN.get(chain, UNISWAP_V3_QUOTER_V2)
+            if not qaddr:
+                return D("0")
+            quoter = w3.eth.contract(
+                address=Web3.to_checksum_address(qaddr),
+                abi=UNISWAP_V3_QUOTER_ABI if dex_type != "sushi_v3" else SUSHI_V3_QUOTER_ABI,
+            )
+            best_out = 0
+            for fee in (100, 500, 3000, 10000):
+                try:
+                    result = quoter.functions.quoteExactInputSingle((
+                        Web3.to_checksum_address(base),
+                        Web3.to_checksum_address(quote),
+                        LARGE_AMOUNT, fee, 0,
+                    )).call()
+                    if result[0] > best_out:
+                        best_out = result[0]
+                except Exception:
+                    continue
+            amount_out = best_out
+        else:
+            return D("0")
+
+        if amount_out == 0:
+            return D("0")
+        # Return per-unit price (divide by 10 since we quoted 10 WETH).
+        return D(amount_out) / D("10") / D(10 ** USDC_DECIMALS)
 
     # ------------------------------------------------------------------
     # DEX-specific quoting

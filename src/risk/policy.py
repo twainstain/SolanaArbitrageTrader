@@ -40,6 +40,11 @@ class RiskPolicy:
     # Production: 0.005 WETH (~$10). Testing: 0.0005 (~$1).
     min_net_profit: Decimal = D("0.005")
 
+    # Minimum spread percentage to consider an opportunity.
+    # Rejects thin spreads that look profitable in theory but can't survive
+    # real execution (slippage, gas, MEV). Default 2%.
+    min_spread_pct: Decimal = D("2.0")
+
     # Maximum allowed slippage in bps
     max_slippage_bps: Decimal = D("50")
 
@@ -108,7 +113,14 @@ class RiskPolicy:
         # "simulation_approved" vs "simulation_rejected" instead of just "rejected".
         simulation_mode = not self.execution_enabled
 
-        # Rule 2: Minimum net profit
+        # Rule 2a: Minimum spread percentage
+        if opportunity.gross_spread_pct < self.min_spread_pct:
+            analysis["reason_detail"] = (
+                f"Spread {opportunity.gross_spread_pct}% is below minimum {self.min_spread_pct}%."
+            )
+            return RiskVerdict(False, "below_min_spread", analysis)
+
+        # Rule 2b: Minimum net profit
         if opportunity.net_profit_base < self.min_net_profit:
             analysis["reason_detail"] = (
                 f"Net profit {opportunity.net_profit_base} is below minimum {self.min_net_profit}. "
@@ -184,6 +196,7 @@ class RiskPolicy:
         """Serialize the current policy for logging/API."""
         return {
             "min_net_profit": str(self.min_net_profit),
+            "min_spread_pct": str(self.min_spread_pct),
             "max_slippage_bps": str(self.max_slippage_bps),
             "min_liquidity_usd": str(self.min_liquidity_usd),
             "max_quote_age_seconds": self.max_quote_age_seconds,

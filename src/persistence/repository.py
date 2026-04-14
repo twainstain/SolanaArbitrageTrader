@@ -81,13 +81,16 @@ class Repository:
     def count_opportunities_since(self, since_iso: str, status: str | None = None) -> int:
         """Count opportunities since a timestamp, optionally filtered by status.
 
-        Result is cached for 5 seconds — the hourly trade count changes slowly
+        Result is cached for 30 seconds — the hourly trade count changes slowly
         and doesn't need a fresh SELECT on every pipeline call.
         """
         now = _time.monotonic()
+        # Truncate to minute precision for cache comparison — _one_hour_ago()
+        # includes microseconds that change every call, busting the cache.
+        since_key = since_iso[:16]  # "2026-04-14T19:03" — stable for 1 minute
         if self._count_cache is not None:
             ts, cached_since, cached_status, cached_count = self._count_cache
-            if (now - ts) < 5.0 and cached_since == since_iso and cached_status == status:
+            if (now - ts) < 30.0 and cached_since == since_key and cached_status == status:
                 return cached_count
 
         if status:
@@ -101,7 +104,7 @@ class Repository:
                 (since_iso,),
             ).fetchone()
         count = row["cnt"] if row else 0
-        self._count_cache = (now, since_iso, status, count)
+        self._count_cache = (now, since_key, status, count)
         return count
 
     # ------------------------------------------------------------------

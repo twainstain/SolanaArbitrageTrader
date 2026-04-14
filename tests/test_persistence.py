@@ -580,5 +580,20 @@ class CountCacheTests(unittest.TestCase):
         self.assertEqual(count2, 0)
 
 
+    def test_cache_hits_with_microsecond_variation(self) -> None:
+        """Cache should hit when since_iso varies only by microseconds
+        (same minute). This is the real-world pattern: _one_hour_ago()
+        generates a new ISO string each call with different microseconds."""
+        self.repo.create_opportunity(
+            pair="WETH/USDC", chain="ethereum",
+            buy_dex="A", sell_dex="B", spread_bps=D("10"),
+        )
+        # Two calls with same minute but different sub-second precision.
+        count1 = self.repo.count_opportunities_since("2020-01-01T00:00:00.000001")
+        count2 = self.repo.count_opportunities_since("2020-01-01T00:00:00.999999")
+        self.assertEqual(count1, 1)
+        self.assertEqual(count2, 1)  # Should be a cache hit, not a re-query
+
+
 if __name__ == "__main__":
     unittest.main()

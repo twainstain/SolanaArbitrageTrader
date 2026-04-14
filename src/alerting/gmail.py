@@ -50,9 +50,9 @@ class GmailAlert:
         recipient: str | None = None,
         timeout: float = 15.0,
     ) -> None:
-        self.address = address or os.environ.get("GMAIL_ADDRESS", "")
-        self.app_password = app_password or os.environ.get("GMAIL_APP_PASSWORD", "")
-        self.recipient = recipient or os.environ.get("GMAIL_RECIPIENT", "")
+        self.address = address if address is not None else os.environ.get("GMAIL_ADDRESS", "")
+        self.app_password = app_password if app_password is not None else os.environ.get("GMAIL_APP_PASSWORD", "")
+        self.recipient = recipient if recipient is not None else os.environ.get("GMAIL_RECIPIENT", "")
         self.timeout = timeout
 
     @property

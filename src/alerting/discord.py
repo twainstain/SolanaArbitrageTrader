@@ -39,7 +39,7 @@ class DiscordAlert:
         webhook_url: str | None = None,
         timeout: float = 10.0,
     ) -> None:
-        self.webhook_url = webhook_url or os.environ.get("DISCORD_WEBHOOK_URL", "")
+        self.webhook_url = webhook_url if webhook_url is not None else os.environ.get("DISCORD_WEBHOOK_URL", "")
         self.timeout = timeout
 
     @property

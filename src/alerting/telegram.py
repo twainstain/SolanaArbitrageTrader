@@ -45,8 +45,8 @@ class TelegramAlert:
         chat_id: str | None = None,
         timeout: float = 10.0,
     ) -> None:
-        self.bot_token = bot_token or os.environ.get("TELEGRAM_BOT_TOKEN", "")
-        self.chat_id = chat_id or os.environ.get("TELEGRAM_CHAT_ID", "")
+        self.bot_token = bot_token if bot_token is not None else os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        self.chat_id = chat_id if chat_id is not None else os.environ.get("TELEGRAM_CHAT_ID", "")
         self.timeout = timeout
 
     @property

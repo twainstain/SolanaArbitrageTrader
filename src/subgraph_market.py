@@ -45,7 +45,7 @@ class SubgraphMarket:
 
     def __init__(self, config: BotConfig, api_key: str | None = None, timeout: float = 15.0) -> None:
         self.config = config
-        self.api_key = api_key or os.environ.get("THEGRAPH_API_KEY", "")
+        self.api_key = api_key if api_key is not None else os.environ.get("THEGRAPH_API_KEY", "")
         self.timeout = timeout
         self._session = requests.Session()
 

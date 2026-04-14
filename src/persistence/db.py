@@ -83,6 +83,8 @@ CREATE TABLE IF NOT EXISTS pricing_results (
     slippage_cost   TEXT NOT NULL DEFAULT '0',
     gas_estimate    TEXT NOT NULL DEFAULT '0',
     expected_net_profit TEXT NOT NULL DEFAULT '0',
+    buy_liquidity_usd TEXT NOT NULL DEFAULT '0',
+    sell_liquidity_usd TEXT NOT NULL DEFAULT '0',
     created_at      TEXT NOT NULL
 );
 
@@ -136,6 +138,23 @@ CREATE TABLE IF NOT EXISTS system_checkpoints (
     updated_at      TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS discovered_pairs (
+    discovered_pair_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pair            TEXT NOT NULL,
+    chain           TEXT NOT NULL,
+    base_symbol     TEXT NOT NULL,
+    quote_symbol    TEXT NOT NULL,
+    dex_count       INTEGER NOT NULL DEFAULT 0,
+    total_volume_24h REAL NOT NULL DEFAULT 0,
+    total_liquidity REAL NOT NULL DEFAULT 0,
+    dex_names_json  TEXT NOT NULL DEFAULT '[]',
+    base_address    TEXT NOT NULL DEFAULT '',
+    quote_address   TEXT NOT NULL DEFAULT '',
+    is_blue_chip    INTEGER NOT NULL DEFAULT 0,
+    arbitrage_score REAL NOT NULL DEFAULT 0,
+    refreshed_at    TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_pairs_chain ON pairs(chain);
 CREATE INDEX IF NOT EXISTS idx_pools_pair ON pools(pair_id);
 CREATE INDEX IF NOT EXISTS idx_pools_chain ON pools(chain);
@@ -147,6 +166,8 @@ CREATE INDEX IF NOT EXISTS idx_sim_opp ON simulations(opportunity_id);
 CREATE INDEX IF NOT EXISTS idx_exec_opp ON execution_attempts(opportunity_id);
 CREATE INDEX IF NOT EXISTS idx_result_exec ON trade_results(execution_id);
 CREATE INDEX IF NOT EXISTS idx_checkpoint_type ON system_checkpoints(checkpoint_type);
+CREATE INDEX IF NOT EXISTS idx_discovered_pairs_chain ON discovered_pairs(chain);
+CREATE INDEX IF NOT EXISTS idx_discovered_pairs_pair ON discovered_pairs(pair);
 """
 
 _TABLES_POSTGRES = _TABLES_SQLITE.replace(

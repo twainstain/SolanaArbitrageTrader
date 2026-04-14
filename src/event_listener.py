@@ -44,8 +44,12 @@ from log import (
 )
 from models import ZERO
 from onchain_market import OnChainMarket
+from persistence.repository import Repository
+from persistence.db import init_db
+from registry.monitored_pools import MONITORED_POOLS, sync_monitored_pools
 from scanner import OpportunityScanner
 from strategy import ArbitrageStrategy
+from config import PairConfig
 
 logger = get_logger(__name__)
 
@@ -58,23 +62,14 @@ _raw = Web3.keccak(
 ).hex()
 SWAP_EVENT_TOPIC = _raw if _raw.startswith("0x") else f"0x{_raw}"
 
-# Well-known WETH/USDC pool addresses to monitor for swaps.
-MONITORED_POOLS: dict[str, list[str]] = {
-    "ethereum": [
-        "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640",
-        "0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8",
-    ],
-    "bsc": [
-        "0x36696169C63e42cd08ce11f5deeBbCeBae652050",
-    ],
-    "arbitrum": [
-        "0xC6962004f452bE9203591991D15f6b388e09E8D0",
-    ],
-    "base": [
-        "0xd0b53D9277642d899DF5C87A3966A349A798F224",
-    ],
-}
-
+# Solidly-fork (Velodrome/Aerodrome) Swap event signature.
+# event Swap(address indexed sender, address indexed to,
+#            uint256 amount0In, uint256 amount1In,
+#            uint256 amount0Out, uint256 amount1Out)
+_solidly_raw = Web3.keccak(
+    text="Swap(address,address,uint256,uint256,uint256,uint256)"
+).hex()
+SOLIDLY_SWAP_EVENT_TOPIC = _solidly_raw if _solidly_raw.startswith("0x") else f"0x{_solidly_raw}"
 
 class SwapEventListener:
     """Poll for Swap events and trigger opportunity evaluation.
@@ -89,10 +84,12 @@ class SwapEventListener:
         config: BotConfig,
         dry_run: bool = True,
         poll_interval: float = 2.0,
+        repository: Repository | None = None,
     ) -> None:
         self.config = config
         self.dry_run = dry_run
         self.poll_interval = poll_interval
+        self.repository = repository
 
         rpc_overrides = get_rpc_overrides()
 
@@ -102,12 +99,21 @@ class SwapEventListener:
             raise ValueError(f"No RPC URL for chain '{self.chain}'.")
 
         self.w3 = Web3(Web3.HTTPProvider(rpc_url))
-        self.market = OnChainMarket(config, rpc_overrides=rpc_overrides or None)
+        self._pairs = [PairConfig(
+            pair=config.pair,
+            base_asset=config.base_asset,
+            quote_asset=config.quote_asset,
+            trade_size=config.trade_size,
+        )]
+        if config.extra_pairs:
+            self._pairs.extend(config.extra_pairs)
+        self.market = OnChainMarket(config, rpc_overrides=rpc_overrides or None, pairs=self._pairs)
 
         # Use OpportunityScanner instead of raw ArbitrageStrategy.
         # This adds multi-factor ranking, risk filtering, and alert thresholds.
         self.scanner = OpportunityScanner(
             config,
+            pairs=self._pairs,
             alert_min_net_profit=config.min_profit_base,
             alert_max_warning_flags=1,
         )
@@ -122,7 +128,29 @@ class SwapEventListener:
 
     @property
     def pools_to_monitor(self) -> list[str]:
-        return MONITORED_POOLS.get(self.chain, [])
+        pools: list[str] = []
+        for pair_cfg in self._pairs:
+            pools.extend(self._pools_for_pair(pair_cfg.pair))
+        # Preserve order while removing duplicates.
+        return list(dict.fromkeys(pools))
+
+    def _pools_for_pair(self, pair_name: str) -> list[str]:
+        """Resolve pools for a pair from repository metadata first, static map second."""
+        if self.repository is not None:
+            try:
+                db_pools = self.repository.get_enabled_pools_for_pair_name(pair_name, chain=self.chain)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to load monitored pools for %s on %s from repository: %s",
+                    pair_name, self.chain, exc,
+                )
+            else:
+                addresses = [row["address"] for row in db_pools if row.get("address")]
+                if addresses:
+                    return addresses
+
+        chain_pools = MONITORED_POOLS.get(self.chain, {})
+        return list(chain_pools.get(pair_name, []))
 
     def run(self) -> None:
         """Poll for swaps and evaluate opportunities indefinitely."""
@@ -167,7 +195,7 @@ class SwapEventListener:
                 "fromBlock": self._last_block + 1,
                 "toBlock": current_block,
                 "address": pool_addrs,
-                "topics": [SWAP_EVENT_TOPIC],
+                "topics": [[SWAP_EVENT_TOPIC, SOLIDLY_SWAP_EVENT_TOPIC]],
             })
         except Exception as exc:
             logger.error("Log fetch error: %s", exc)
@@ -208,12 +236,13 @@ class SwapEventListener:
             return
 
         self._opportunity_count += 1
+        base_asset = opportunity.pair.split("/", 1)[0] if "/" in opportunity.pair else self.config.base_asset
         logger.info(
             "OPPORTUNITY [rank 1/%d]: buy on %s, sell on %s, net=%.6f %s, "
             "liq_score=%.2f, flags=%s",
             len(scan_result.opportunities),
             opportunity.buy_dex, opportunity.sell_dex,
-            float(opportunity.net_profit_base), self.config.base_asset,
+            float(opportunity.net_profit_base), base_asset,
             opportunity.liquidity_score,
             list(opportunity.warning_flags) or "none",
         )
@@ -228,7 +257,7 @@ class SwapEventListener:
                 self._total_realized_profit += result.realized_profit_base
                 logger.info(
                     "EXECUTED: realized profit=%.6f %s",
-                    float(result.realized_profit_base), self.config.base_asset,
+                    float(result.realized_profit_base), base_asset,
                 )
                 log_scan(logger, self._scan_index, quotes, opportunity, "executed")
             else:
@@ -266,11 +295,19 @@ def main() -> None:
     setup_logging()
     args = build_parser().parse_args()
     config = BotConfig.from_file(args.config)
+    repo = Repository(init_db())
+    synced_pools = sync_monitored_pools(repo)
+    repo.set_checkpoint("monitored_pools_synced", str(synced_pools))
+    logger.info(
+        "Persistence backend=%s, monitored pools synced=%d, total enabled pools=%d",
+        repo.conn.backend, synced_pools, repo.count_enabled_pools(chain=config.dexes[0].chain or "ethereum"),
+    )
 
     listener = SwapEventListener(
         config=config,
         dry_run=args.dry_run,
         poll_interval=args.poll_interval,
+        repository=repo,
     )
     listener.run()
 

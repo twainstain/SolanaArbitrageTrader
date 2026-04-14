@@ -81,6 +81,25 @@ def run_dashboard(app, port: int = 8000) -> None:
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
 
 
+def _build_pair_list(config: BotConfig, discovered_pairs=None):
+    from config import PairConfig
+
+    if discovered_pairs:
+        return list(discovered_pairs)
+
+    pairs = [
+        PairConfig(
+            pair=config.pair,
+            base_asset=config.base_asset,
+            quote_asset=config.quote_asset,
+            trade_size=config.trade_size,
+        )
+    ]
+    if config.extra_pairs:
+        pairs.extend(config.extra_pairs)
+    return pairs
+
+
 def main() -> None:
     load_env()
     setup_logging()
@@ -97,9 +116,17 @@ def main() -> None:
                         help="Run DexScreener discovery first — find best pairs by volume + multi-DEX presence")
     args = parser.parse_args()
 
+    # --- Bot ---
+    config_path = args.config
+    if config_path is None:
+        config_path = "config/multichain_onchain_config.json" if args.onchain else "config/live_config.json"
+    config = BotConfig.from_file(config_path)
+
     # --- Discovery (per video recommendations) ---
+    discovered_pairs = None
     if args.discover:
         from registry.discovery import discover_best_pairs, print_discovery_report
+        from config import PairConfig
         logger.info("Running pair discovery (sort by volume, multi-exchange, ERC-20)...")
         discovered = discover_best_pairs(
             chains=["ethereum", "arbitrum", "base", "polygon", "optimism", "avalanche"],
@@ -109,6 +136,18 @@ def main() -> None:
         )
         print_discovery_report(discovered)
         logger.info("Discovery complete — %d pairs found", len(discovered))
+        discovered_pairs = [
+            PairConfig(
+                pair=f"{dp.base_symbol}/{dp.quote_symbol}",
+                base_asset=dp.base_symbol,
+                quote_asset=dp.quote_symbol,
+                trade_size=config.trade_size,
+                base_address=dp.base_address or None,
+                quote_address=dp.quote_address or None,
+                chain=dp.chain,
+            )
+            for dp in discovered
+        ]
 
     # --- Init persistence ---
     conn = init_db()
@@ -176,28 +215,29 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _handle_shutdown)
     signal.signal(signal.SIGINT, _handle_shutdown)
 
-    # --- Bot ---
-    config_path = args.config
-    if config_path is None:
-        config_path = "config/multichain_onchain_config.json" if args.onchain else "config/live_config.json"
-    config = BotConfig.from_file(config_path)
+    all_pairs = _build_pair_list(config, discovered_pairs)
 
     if args.onchain:
         from onchain_market import OnChainMarket
         from env import get_rpc_overrides
+        from observability.quote_diagnostics import QuoteDiagnostics
         rpc = get_rpc_overrides()
-        market = OnChainMarket(config, rpc_overrides=rpc or None)
+        diagnostics = QuoteDiagnostics()
+        market = OnChainMarket(
+            config,
+            rpc_overrides=rpc or None,
+            pairs=all_pairs,
+            diagnostics=diagnostics,
+        )
         logger.info("[mode] ON-CHAIN — querying DEX contracts via RPC")
     else:
-        market = LiveMarket(config)
+        market = LiveMarket(config, pairs=all_pairs)
         logger.info("[mode] LIVE — DeFi Llama aggregated prices")
-    scanner = OpportunityScanner(config)
+    scanner = OpportunityScanner(config, pairs=all_pairs)
 
     logger.info("Starting live scan: %d iterations, %d chains, sleep=%.0fs",
                 args.iterations, len(config.dexes), args.sleep)
-    logger.info("Pairs: %s + %s",
-                config.pair,
-                ", ".join(p.pair for p in (config.extra_pairs or [])))
+    logger.info("Pairs: %s", ", ".join(p.pair for p in all_pairs))
 
     for i in range(1, args.iterations + 1):
         if shutdown_requested:
@@ -246,7 +286,7 @@ def main() -> None:
         # (DEX fees, flash loan fee, slippage, gas) from strategy.evaluate_pair().
         processed_chains = set()
         from strategy import ArbitrageStrategy
-        chain_strategy = ArbitrageStrategy(config)
+        chain_strategy = ArbitrageStrategy(config, pairs=all_pairs)
 
         for chain_name, chain_quotes in chain_map.items():
             if len(chain_quotes) < 2:
@@ -293,6 +333,8 @@ def main() -> None:
                 slippage_cost=opp.slippage_cost_quote,
                 gas_estimate=opp.gas_cost_base,
                 expected_net_profit=opp.net_profit_base,
+                buy_liquidity_usd=opp.buy_liquidity_usd,
+                sell_liquidity_usd=opp.sell_liquidity_usd,
             )
             repo.save_risk_decision(
                 opp_id=opp_id, approved=False,

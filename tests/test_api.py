@@ -146,6 +146,40 @@ class AggregationEndpointTests(_APITestBase):
         self.assertEqual(data["detected"], 1)
         self.assertEqual(data["approved"], 1)
 
+    def test_operations_returns_operational_metadata(self):
+        self.repo.set_checkpoint("discovery_snapshot_source", "db_cache")
+        self.repo.set_checkpoint("discovery_pair_count", "7")
+        self.repo.set_checkpoint("monitored_pools_synced", "3")
+
+        pair_id = self.repo.save_pair(
+            pair="WETH/USDC",
+            chain="ethereum",
+            base_token="WETH",
+            quote_token="USDC",
+        )
+        self.repo.save_pool(
+            pair_id=pair_id,
+            chain="ethereum",
+            dex="uniswap_v3",
+            address="0xpool",
+        )
+
+        resp = self.client.get("/operations")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["db_backend"], "sqlite")
+        self.assertEqual(data["enabled_pools_total"], 1)
+        self.assertEqual(data["discovery_snapshot_source"], "db_cache")
+        self.assertEqual(data["last_discovery_pair_count"], 7)
+        self.assertEqual(data["last_monitored_pools_synced"], 3)
+
+    def test_dashboard_html_includes_operations_section(self):
+        resp = self.client.get("/dashboard")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.text
+        self.assertIn('id="operations-grid"', body)
+        self.assertIn("fetchJSON('/operations')", body)
+
 
 class PauseEndpointTests(_APITestBase):
     def test_get_pause_status(self):
@@ -180,6 +214,34 @@ class ReplayEndpointTests(_APITestBase):
     def test_replay_nonexistent_returns_404(self):
         resp = self.client.post("/opportunities/opp_fake/replay")
         self.assertEqual(resp.status_code, 404)
+
+
+class DiagnosticsEndpointTests(_APITestBase):
+    def test_diagnostics_returns_empty_when_not_configured(self):
+        resp = self.client.get("/diagnostics/quotes")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["dexes"], {})
+
+    def test_diagnostics_returns_data_when_configured(self):
+        from observability.quote_diagnostics import QuoteDiagnostics, QuoteOutcome
+        import api.app as app_mod
+        diag = QuoteDiagnostics()
+        diag.record("Uniswap", "ethereum", "WETH/USDC", QuoteOutcome.SUCCESS, latency_ms=50.0)
+        diag.record("Uniswap", "ethereum", "WETH/USDC", QuoteOutcome.ERROR, error_msg="timeout")
+        old = app_mod._diagnostics
+        app_mod._diagnostics = diag
+        try:
+            resp = self.client.get("/diagnostics/quotes")
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            self.assertIn("Uniswap", data["dexes"])
+            entries = data["dexes"]["Uniswap"]
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(entries[0]["total_quotes"], 2)
+            self.assertEqual(entries[0]["success_count"], 1)
+        finally:
+            app_mod._diagnostics = old
 
 
 if __name__ == "__main__":

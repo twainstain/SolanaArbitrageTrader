@@ -9,7 +9,7 @@ import math
 import time
 from decimal import Decimal
 
-from config import BotConfig
+from config import BotConfig, PairConfig
 from log import get_logger
 from models import BPS_DIVISOR, ONE, ZERO, MarketQuote, Opportunity
 
@@ -52,8 +52,18 @@ def _dynamic_slippage_bps(
 
 
 class ArbitrageStrategy:
-    def __init__(self, config: BotConfig) -> None:
+    def __init__(self, config: BotConfig, pairs: list[PairConfig] | None = None) -> None:
         self.config = config
+        self._pair_configs: dict[str, PairConfig] = {
+            config.pair: PairConfig(
+                pair=config.pair,
+                base_asset=config.base_asset,
+                quote_asset=config.quote_asset,
+                trade_size=config.trade_size,
+            )
+        }
+        for pair_cfg in pairs or config.extra_pairs or []:
+            self._pair_configs[pair_cfg.pair] = pair_cfg
 
     def find_best_opportunity(self, quotes: list[MarketQuote]) -> Opportunity | None:
         """Return the most profitable cross-DEX opportunity, or None if nothing is actionable."""
@@ -112,7 +122,16 @@ class ArbitrageStrategy:
         we skip the fee adjustment to avoid double-counting — fee_bps is
         carried for display only.
         """
-        trade_size = self.config.trade_size
+        pair_cfg = self._pair_configs.get(
+            buy_quote.pair,
+            PairConfig(
+                pair=buy_quote.pair,
+                base_asset=self.config.base_asset,
+                quote_asset=self.config.quote_asset,
+                trade_size=self.config.trade_size,
+            ),
+        )
+        trade_size = pair_cfg.trade_size
         buy_cost_quote = trade_size * buy_quote.buy_price
         sell_proceeds_quote = trade_size * sell_quote.sell_price
 
@@ -229,7 +248,7 @@ class ArbitrageStrategy:
                 break
 
         return Opportunity(
-            pair=self.config.pair,
+            pair=buy_quote.pair,
             buy_dex=buy_quote.dex,
             sell_dex=sell_quote.dex,
             trade_size=trade_size,
@@ -248,4 +267,6 @@ class ArbitrageStrategy:
             liquidity_score=liquidity_score,
             chain=chain,
             fees_pre_included=buy_quote.fee_included or sell_quote.fee_included,
+            buy_liquidity_usd=buy_quote.liquidity_usd,
+            sell_liquidity_usd=sell_quote.liquidity_usd,
         )

@@ -120,6 +120,8 @@ class Opportunity:
     strategy_type: str = "cross_exchange"
     chain: str = ""                   # chain where this opportunity exists
     fees_pre_included: bool = False   # True when DEX fees were already in the quoted prices
+    buy_liquidity_usd: Decimal = ZERO   # estimated TVL of the buy-side pool
+    sell_liquidity_usd: Decimal = ZERO  # estimated TVL of the sell-side pool
 
     def __post_init__(self) -> None:
         _coerce_decimals(self)

@@ -88,6 +88,20 @@ def _capture_log_output(bot: ArbitrageBot, **run_kwargs) -> str:
 
 
 class BotTests(unittest.TestCase):
+    def test_base_asset_for_opportunity_uses_opportunity_pair(self) -> None:
+        opp = Opportunity(
+            pair="OP/USDC",
+            buy_dex="A",
+            sell_dex="B",
+            trade_size=1.0,
+            cost_to_buy_quote=1.0,
+            proceeds_from_sell_quote=1.1,
+            gross_profit_quote=0.1,
+            net_profit_quote=0.08,
+            net_profit_base=0.01,
+        )
+        self.assertEqual(ArbitrageBot._base_asset_for_opportunity(opp), "OP")
+
     def test_bot_runs_without_sleep(self) -> None:
         config = _make_bot_config()
         market = SimulatedMarket(config, seed=1)

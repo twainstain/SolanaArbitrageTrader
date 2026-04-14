@@ -329,6 +329,284 @@ class OnChainMarketSushiTests(unittest.TestCase):
             ocm.SUSHI_V3_QUOTER.update(original_sushi)
 
 
+class OnChainMarketVelodromeTests(unittest.TestCase):
+    @patch("onchain_market.Web3")
+    def test_velodrome_uses_best_of_stable_and_volatile_routes(self, mock_web3_cls) -> None:
+        config = BotConfig(
+            pair="OP/USDC",
+            base_asset="OP",
+            quote_asset="USDC",
+            trade_size=250.0,
+            min_profit_base=0.0,
+            estimated_gas_cost_base=0.0,
+            flash_loan_fee_bps=9.0,
+            flash_loan_provider="aave_v3",
+            slippage_bps=10.0,
+            poll_interval_seconds=0.0,
+            dexes=[
+                DexConfig(
+                    name="Velodrome-Optimism", base_price=0, fee_bps=20.0,
+                    volatility_bps=0, chain="optimism", dex_type="velodrome_v2",
+                ),
+                DexConfig(
+                    name="Uniswap-Optimism", base_price=0, fee_bps=5.0,
+                    volatility_bps=0, chain="optimism", dex_type="uniswap_v3",
+                ),
+            ],
+        )
+        config.validate()
+
+        mock_w3 = MagicMock()
+        mock_web3_cls.return_value = mock_w3
+        mock_web3_cls.HTTPProvider = MagicMock()
+        mock_web3_cls.to_checksum_address = lambda x: x
+
+        router = MagicMock()
+
+        def get_amounts_out(_amount_in, routes):
+            stable = routes[0][2]
+            result = MagicMock()
+            if stable:
+                result.call.return_value = [10**18, 1_450 * 10**6]
+            else:
+                result.call.return_value = [10**18, 1_500 * 10**6]
+            return result
+
+        router.functions.getAmountsOut.side_effect = get_amounts_out
+        mock_w3.eth.contract.return_value = router
+
+        market = OnChainMarket(config)
+        market._w3 = {"optimism": mock_w3}
+
+        price, fee_bps = market._quote_velodrome(
+            "optimism",
+            "0xbase",
+            "0xquote",
+            "velodrome_v2",
+            "OP",
+            "USDC",
+        )
+
+        self.assertEqual(price, 1500)
+        self.assertEqual(fee_bps, 20)
+
+    @patch("onchain_market.Web3")
+    def test_velodrome_falls_back_to_bridged_usdc(self, mock_web3_cls) -> None:
+        """When native USDC returns 0, Velodrome should retry with USDC.e."""
+        config = BotConfig(
+            pair="WETH/USDC", base_asset="WETH", quote_asset="USDC",
+            trade_size=1.0, min_profit_base=0.0, estimated_gas_cost_base=0.0,
+            flash_loan_fee_bps=9.0, flash_loan_provider="aave_v3",
+            slippage_bps=10.0, poll_interval_seconds=0.0,
+            dexes=[
+                DexConfig(name="Velodrome-Optimism", base_price=0, fee_bps=20.0,
+                          volatility_bps=0, chain="optimism", dex_type="velodrome_v2"),
+                DexConfig(name="Uniswap-Optimism", base_price=0, fee_bps=5.0,
+                          volatility_bps=0, chain="optimism", dex_type="uniswap_v3"),
+            ],
+        )
+        config.validate()
+
+        mock_w3 = MagicMock()
+        mock_web3_cls.return_value = mock_w3
+        mock_web3_cls.HTTPProvider = MagicMock()
+        mock_web3_cls.to_checksum_address = lambda x: x
+
+        router = MagicMock()
+        native_usdc = "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85"
+        bridged_usdc = "0x7F5c764cBc14f9669B88837ca1490cCa17c31607"
+
+        def get_amounts_out(_amount_in, routes):
+            quote_addr = routes[0][1]
+            result = MagicMock()
+            if quote_addr.lower() == native_usdc.lower():
+                # Native USDC pool doesn't exist — return 0.
+                result.call.return_value = [10**18, 0]
+            elif quote_addr.lower() == bridged_usdc.lower():
+                # USDC.e pool works.
+                result.call.return_value = [10**18, 2_400 * 10**6]
+            else:
+                result.call.return_value = [10**18, 0]
+            return result
+
+        router.functions.getAmountsOut.side_effect = get_amounts_out
+        mock_w3.eth.contract.return_value = router
+
+        market = OnChainMarket(config)
+        market._w3 = {"optimism": mock_w3}
+
+        price, fee_bps = market._quote_velodrome(
+            "optimism", "0xweth", native_usdc,
+            "velodrome_v2", "WETH", "USDC",
+        )
+        self.assertEqual(price, 2400)
+
+    @patch("onchain_market.Web3")
+    def test_velodrome_fee_stable_vs_volatile(self, mock_web3_cls) -> None:
+        """Stable pool should return ~2 bps, volatile ~20 bps."""
+        config = BotConfig(
+            pair="USDC/USDT", base_asset="USDC", quote_asset="USDT",
+            trade_size=1000.0, min_profit_base=0.0, estimated_gas_cost_base=0.0,
+            flash_loan_fee_bps=9.0, flash_loan_provider="aave_v3",
+            slippage_bps=10.0, poll_interval_seconds=0.0,
+            dexes=[
+                DexConfig(name="Velodrome-Optimism", base_price=0, fee_bps=20.0,
+                          volatility_bps=0, chain="optimism", dex_type="velodrome_v2"),
+                DexConfig(name="Uniswap-Optimism", base_price=0, fee_bps=5.0,
+                          volatility_bps=0, chain="optimism", dex_type="uniswap_v3"),
+            ],
+        )
+        config.validate()
+
+        mock_w3 = MagicMock()
+        mock_web3_cls.return_value = mock_w3
+        mock_web3_cls.HTTPProvider = MagicMock()
+        mock_web3_cls.to_checksum_address = lambda x: x
+
+        router = MagicMock()
+
+        def get_amounts_out(_amount_in, routes):
+            stable = routes[0][2]
+            result = MagicMock()
+            if stable:
+                # Stable pool wins for stablecoin pair.
+                result.call.return_value = [10**6, 999_500]
+            else:
+                result.call.return_value = [10**6, 998_000]
+            return result
+
+        router.functions.getAmountsOut.side_effect = get_amounts_out
+        mock_w3.eth.contract.return_value = router
+
+        market = OnChainMarket(config)
+        market._w3 = {"optimism": mock_w3}
+
+        price, fee_bps = market._quote_velodrome(
+            "optimism", "0xusdc", "0xusdt",
+            "velodrome_v2", "USDC", "USDT",
+        )
+        # Stable pool won → fee should be 2 bps.
+        self.assertEqual(fee_bps, 2)
+
+    @patch("onchain_market.Web3")
+    def test_aerodrome_uses_usdbc_on_base(self, mock_web3_cls) -> None:
+        """Aerodrome on Base should fall back to USDbC when native USDC returns 0."""
+        config = BotConfig(
+            pair="WETH/USDC", base_asset="WETH", quote_asset="USDC",
+            trade_size=1.0, min_profit_base=0.0, estimated_gas_cost_base=0.0,
+            flash_loan_fee_bps=9.0, flash_loan_provider="aave_v3",
+            slippage_bps=10.0, poll_interval_seconds=0.0,
+            dexes=[
+                DexConfig(name="Aerodrome-Base", base_price=0, fee_bps=20.0,
+                          volatility_bps=0, chain="base", dex_type="aerodrome"),
+                DexConfig(name="Uniswap-Base", base_price=0, fee_bps=5.0,
+                          volatility_bps=0, chain="base", dex_type="uniswap_v3"),
+            ],
+        )
+        config.validate()
+
+        mock_w3 = MagicMock()
+        mock_web3_cls.return_value = mock_w3
+        mock_web3_cls.HTTPProvider = MagicMock()
+        mock_web3_cls.to_checksum_address = lambda x: x
+
+        router = MagicMock()
+        native_usdc = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+        usdbc = "0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA"
+
+        def get_amounts_out(_amount_in, routes):
+            quote_addr = routes[0][1]
+            result = MagicMock()
+            if quote_addr.lower() == usdbc.lower():
+                result.call.return_value = [10**18, 2_350 * 10**6]
+            else:
+                result.call.return_value = [10**18, 0]
+            return result
+
+        router.functions.getAmountsOut.side_effect = get_amounts_out
+        mock_w3.eth.contract.return_value = router
+
+        market = OnChainMarket(config)
+        market._w3 = {"base": mock_w3}
+
+        price, fee_bps = market._quote_velodrome(
+            "base", "0xweth", native_usdc,
+            "aerodrome", "WETH", "USDC",
+        )
+        self.assertEqual(price, 2350)
+
+
+class LiquidityEstimationTests(unittest.TestCase):
+    @patch("onchain_market.Web3")
+    def test_estimate_deep_pool(self, mock_web3_cls) -> None:
+        """Small and normal prices close together → high TVL estimate."""
+        mock_web3_cls.HTTPProvider = MagicMock()
+        mock_web3_cls.to_checksum_address = lambda x: x
+        config = _make_onchain_config()
+        market = OnChainMarket(config, rpc_overrides={"ethereum": "http://fake"})
+
+        # Mock _quote_small_amount to return nearly the same as normal.
+        from decimal import Decimal as D
+        with patch.object(market, "_quote_small_amount", return_value=D("2200")):
+            tvl = market._estimate_liquidity_usd(
+                "ethereum", "0xweth", "0xusdc", "uniswap_v3",
+                "WETH", "USDC", D("2199"),
+            )
+        # 0.045% impact → very high TVL
+        self.assertGreater(tvl, D("1000000"))
+
+    @patch("onchain_market.Web3")
+    def test_estimate_thin_pool(self, mock_web3_cls) -> None:
+        """2.2% price impact → ~$52K TVL → below scanner $1M threshold."""
+        mock_web3_cls.HTTPProvider = MagicMock()
+        mock_web3_cls.to_checksum_address = lambda x: x
+        config = _make_onchain_config()
+        market = OnChainMarket(config, rpc_overrides={"ethereum": "http://fake"})
+
+        from decimal import Decimal as D
+        # small=2344, normal=2292 → 2.2% impact
+        with patch.object(market, "_quote_small_amount", return_value=D("2344")):
+            tvl = market._estimate_liquidity_usd(
+                "ethereum", "0xweth", "0xusdc", "uniswap_v3",
+                "WETH", "USDC", D("2292"),
+            )
+        # ~$52K TVL — well below $1M
+        self.assertLess(tvl, D("100000"))
+        self.assertGreater(tvl, D("10000"))
+
+    @patch("onchain_market.Web3")
+    def test_estimate_returns_zero_on_failure(self, mock_web3_cls) -> None:
+        """If _quote_small_amount fails, return ZERO (no filter triggered)."""
+        mock_web3_cls.HTTPProvider = MagicMock()
+        mock_web3_cls.to_checksum_address = lambda x: x
+        config = _make_onchain_config()
+        market = OnChainMarket(config, rpc_overrides={"ethereum": "http://fake"})
+
+        from decimal import Decimal as D
+        with patch.object(market, "_quote_small_amount", side_effect=Exception("RPC fail")):
+            tvl = market._estimate_liquidity_usd(
+                "ethereum", "0xweth", "0xusdc", "uniswap_v3",
+                "WETH", "USDC", D("2200"),
+            )
+        self.assertEqual(tvl, 0)
+
+    @patch("onchain_market.Web3")
+    def test_estimate_zero_impact_returns_deep_sentinel(self, mock_web3_cls) -> None:
+        """Zero impact (same price) → deep pool sentinel."""
+        mock_web3_cls.HTTPProvider = MagicMock()
+        mock_web3_cls.to_checksum_address = lambda x: x
+        config = _make_onchain_config()
+        market = OnChainMarket(config, rpc_overrides={"ethereum": "http://fake"})
+
+        from decimal import Decimal as D
+        with patch.object(market, "_quote_small_amount", return_value=D("2200")):
+            tvl = market._estimate_liquidity_usd(
+                "ethereum", "0xweth", "0xusdc", "uniswap_v3",
+                "WETH", "USDC", D("2200"),
+            )
+        self.assertEqual(tvl, OnChainMarket._DEEP_POOL_TVL)
+
+
 class FeeTierCacheTests(unittest.TestCase):
     """Tests for the fee tier caching in OnChainMarket._try_fee_tiers."""
 

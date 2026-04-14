@@ -126,6 +126,8 @@ class CandidatePipeline:
             slippage_cost=opportunity.slippage_cost_quote,
             gas_estimate=opportunity.gas_cost_base,
             expected_net_profit=opportunity.net_profit_base,
+            buy_liquidity_usd=opportunity.buy_liquidity_usd,
+            sell_liquidity_usd=opportunity.sell_liquidity_usd,
         )
         self.repo.update_opportunity_status(opp_id, "priced")
         _timings["price_ms"] = (_time.monotonic() - _t1) * 1000

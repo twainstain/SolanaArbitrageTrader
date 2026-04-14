@@ -86,6 +86,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <h2>System Status</h2>
     <div class="grid" id="status-grid"></div>
 
+    <!-- Operational Status -->
+    <h2>Operations</h2>
+    <div class="grid" id="operations-grid"></div>
+
+    <!-- DEX Health -->
+    <h2>DEX Health</h2>
+    <div class="grid" id="dex-health-grid"></div>
+
     <!-- Chain Filter + Time Window Tabs -->
     <h2>Performance</h2>
     <div class="filter-row">
@@ -172,11 +180,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     async function loadStatus() {
-        const [health, exec, pause, metrics, pnl] = await Promise.all([
+        const [health, exec, pause, metrics, pnl, operations] = await Promise.all([
             fetchJSON('/health'), fetchJSON('/execution'), fetchJSON('/pause'),
-            fetchJSON('/metrics'), fetchJSON('/pnl'),
+            fetchJSON('/metrics'), fetchJSON('/pnl'), fetchJSON('/operations'),
         ]);
         const grid = document.getElementById('status-grid');
+        const opsGrid = document.getElementById('operations-grid');
         grid.innerHTML = `
             <div class="card">
                 <div class="card-title">Execution</div>
@@ -207,6 +216,48 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 <div class="card-sub">P95: ${metrics.p95_latency_ms}ms</div>
             </div>
         `;
+        opsGrid.innerHTML = `
+            <div class="card">
+                <div class="card-title">DB Backend</div>
+                <div class="card-value">${operations.db_backend || 'unknown'}</div>
+            </div>
+            <div class="card">
+                <div class="card-title">Discovered Pairs</div>
+                <div class="card-value">${operations.discovered_pairs_count || 0}</div>
+                <div class="card-sub">Last refresh snapshot: ${operations.last_discovery_pair_count || 0}</div>
+            </div>
+            <div class="card">
+                <div class="card-title">Discovery Source</div>
+                <div class="card-value">${operations.discovery_snapshot_source || 'unknown'}</div>
+                <div class="card-sub">Background refresh state</div>
+            </div>
+            <div class="card">
+                <div class="card-title">Enabled Pools</div>
+                <div class="card-value">${operations.enabled_pools_total || 0}</div>
+                <div class="card-sub">Last sync inserted: ${operations.last_monitored_pools_synced || 0}</div>
+            </div>
+        `;
+
+        // DEX Health
+        try {
+            const diag = await fetchJSON('/diagnostics/quotes');
+            const healthGrid = document.getElementById('dex-health-grid');
+            const dexes = diag.dexes || {};
+            if (Object.keys(dexes).length === 0) {
+                healthGrid.innerHTML = '<div class="card"><div class="card-title">No data yet</div></div>';
+            } else {
+                healthGrid.innerHTML = Object.entries(dexes).map(([dex, entries]) => {
+                    const bestRate = Math.max(...entries.map(e => e.success_rate || 0));
+                    const statusCls = bestRate >= 0.8 ? 'tag-approved' : bestRate >= 0.3 ? 'tag-detected' : 'tag-rejected';
+                    const avgLat = entries.reduce((s, e) => s + (e.avg_latency_ms || 0), 0) / entries.length;
+                    return `<div class="card">
+                        <div class="card-title">${dex}</div>
+                        <div class="card-value"><span class="tag ${statusCls}">${(bestRate*100).toFixed(0)}%</span></div>
+                        <div class="card-sub">${entries.length} pair(s), avg ${avgLat.toFixed(0)}ms</div>
+                    </div>`;
+                }).join('');
+            }
+        } catch(e) { console.warn('DEX health fetch failed:', e); }
     }
 
     async function loadWindows() {

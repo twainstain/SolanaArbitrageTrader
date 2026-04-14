@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from persistence.db import init_db, close_db
 from persistence.repository import Repository
+from registry.discovery import DiscoveredPair
 
 D = Decimal
 
@@ -32,7 +33,7 @@ class DBSchemaTests(unittest.TestCase):
         expected = {
             "opportunities", "pricing_results", "risk_decisions",
             "simulations", "execution_attempts", "trade_results",
-            "system_checkpoints",
+            "system_checkpoints", "discovered_pairs",
         }
         self.assertTrue(expected.issubset(names))
 
@@ -410,6 +411,100 @@ class BatchCommitTests(unittest.TestCase):
         self.assertEqual(row[0], 1)
         row = self.conn.execute("PRAGMA mmap_size").fetchone()
         self.assertEqual(row[0], 268435456)
+
+
+class DiscoveredPairsPersistenceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.conn = init_db(self.tmp.name)
+        self.repo = Repository(self.conn)
+
+    def tearDown(self) -> None:
+        close_db()
+        Path(self.tmp.name).unlink(missing_ok=True)
+
+    def test_replace_and_get_discovered_pairs(self) -> None:
+        pairs = [
+            DiscoveredPair(
+                pair_name="OP/USDC",
+                base_symbol="OP",
+                quote_symbol="USDC",
+                chain="optimism",
+                dex_count=3,
+                total_volume_24h=2_500_000,
+                total_liquidity=1_200_000,
+                dex_names=["velodrome", "uniswap", "sushiswap"],
+                base_address="0x4200000000000000000000000000000000000042",
+                quote_address="0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
+                is_blue_chip=True,
+                arbitrage_score=10_000_000,
+            ),
+            DiscoveredPair(
+                pair_name="ARB/USDC",
+                base_symbol="ARB",
+                quote_symbol="USDC",
+                chain="arbitrum",
+                dex_count=2,
+                total_volume_24h=1_500_000,
+                total_liquidity=900_000,
+                dex_names=["camelot", "uniswap"],
+                base_address="0x912CE59144191C1204E64559FE8253a0e49E6548",
+                quote_address="0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+                arbitrage_score=5_000_000,
+            ),
+        ]
+        self.repo.replace_discovered_pairs(pairs)
+
+        stored = self.repo.get_discovered_pairs()
+        self.assertEqual(len(stored), 2)
+        self.assertEqual(stored[0].pair_name, "OP/USDC")
+        self.assertEqual(stored[0].base_address, "0x4200000000000000000000000000000000000042")
+        self.assertEqual(stored[1].pair_name, "ARB/USDC")
+
+    def test_replace_discovered_pairs_overwrites_snapshot(self) -> None:
+        self.repo.replace_discovered_pairs([
+            DiscoveredPair(
+                pair_name="OP/USDC",
+                base_symbol="OP",
+                quote_symbol="USDC",
+                chain="optimism",
+                dex_count=3,
+                total_volume_24h=1_0,
+                total_liquidity=1_0,
+                dex_names=["velodrome"],
+            )
+        ])
+        self.repo.replace_discovered_pairs([
+            DiscoveredPair(
+                pair_name="ARB/USDC",
+                base_symbol="ARB",
+                quote_symbol="USDC",
+                chain="arbitrum",
+                dex_count=2,
+                total_volume_24h=2_0,
+                total_liquidity=2_0,
+                dex_names=["camelot", "uniswap"],
+            )
+        ])
+        stored = self.repo.get_discovered_pairs()
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0].pair_name, "ARB/USDC")
+
+    def test_count_discovered_pairs(self) -> None:
+        self.assertEqual(self.repo.count_discovered_pairs(), 0)
+        self.repo.replace_discovered_pairs([
+            DiscoveredPair(
+                pair_name="OP/USDC",
+                base_symbol="OP",
+                quote_symbol="USDC",
+                chain="optimism",
+                dex_count=3,
+                total_volume_24h=1,
+                total_liquidity=1,
+                dex_names=["velodrome"],
+            )
+        ])
+        self.assertEqual(self.repo.count_discovered_pairs(), 1)
 
 
 class SQLitePragmaTests(unittest.TestCase):

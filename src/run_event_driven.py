@@ -38,7 +38,7 @@ from alerting.telegram import TelegramAlert
 from alerting.discord import DiscordAlert
 from alerting.gmail import GmailAlert
 from bot import ArbitrageBot
-from config import BotConfig
+from config import BotConfig, PairConfig
 from env import get_rpc_overrides, load_env
 from log import get_logger, setup_logging
 from models import ZERO, Opportunity
@@ -48,14 +48,30 @@ from persistence.db import init_db
 from persistence.repository import Repository
 from pipeline.lifecycle import CandidatePipeline
 from pipeline.queue import CandidateQueue
+from registry.monitored_pools import sync_monitored_pools
 from risk.circuit_breaker import CircuitBreaker, CircuitBreakerConfig
 from risk.policy import RiskPolicy
 from scanner import OpportunityScanner
+from strategy import ArbitrageStrategy
 from api.app import create_app
 
 logger = get_logger(__name__)
 
 D = Decimal
+
+
+def _build_pair_list(config: BotConfig) -> list[PairConfig]:
+    pairs = [
+        PairConfig(
+            pair=config.pair,
+            base_asset=config.base_asset,
+            quote_asset=config.quote_asset,
+            trade_size=config.trade_size,
+        )
+    ]
+    if config.extra_pairs:
+        pairs.extend(config.extra_pairs)
+    return pairs
 
 
 class PipelineConsumer:
@@ -246,6 +262,8 @@ class EventDrivenScanner:
         self.poll_interval = poll_interval
         self.latency_tracker = latency_tracker
         self._running = False
+        self._pairs = _build_pair_list(config)
+        self._chain_strategy = ArbitrageStrategy(config, pairs=self._pairs)
 
     def run(self) -> None:
         """Main event loop — poll for swaps, scan, push to queue.
@@ -314,13 +332,11 @@ class EventDrivenScanner:
 
             # Use the strategy's evaluate_pair() to compute real costs
             # (DEX fees, flash loan fee, slippage, gas) per the config.
-            from strategy import ArbitrageStrategy
-            chain_strategy = ArbitrageStrategy(self.config)
             for chain_name, chain_quotes in chain_map.items():
                 if len(chain_quotes) < 2:
                     continue
                 # Find best same-chain opportunity using the full cost model.
-                chain_opp = chain_strategy.find_best_opportunity(chain_quotes)
+                chain_opp = self._chain_strategy.find_best_opportunity(chain_quotes)
                 if chain_opp is not None:
                     score = float(chain_opp.net_profit_base) * 0.5
                     if self.queue.push(chain_opp, priority=score, scan_marks=scan_marks):
@@ -358,6 +374,12 @@ def main() -> None:
     # --- Infrastructure ---
     conn = init_db()
     repo = Repository(conn)
+    synced_pools = sync_monitored_pools(repo)
+    repo.set_checkpoint("monitored_pools_synced", str(synced_pools))
+    logger.info(
+        "Persistence backend=%s, monitored pools synced=%d, total enabled pools=%d",
+        conn.backend, synced_pools, repo.count_enabled_pools(),
+    )
     metrics = MetricsCollector()
     queue = CandidateQueue(max_size=args.queue_size)
 
@@ -400,8 +422,16 @@ def main() -> None:
         min_dex_count=2,
         max_results=15,
         interval_seconds=3600,  # refresh every hour
+        repository=repo,
     )
     pair_refresher.start()
+    repo.set_checkpoint("discovery_snapshot_source", pair_refresher.snapshot_source)
+    repo.set_checkpoint("discovery_pair_count", str(repo.count_discovered_pairs()))
+    logger.info(
+        "Discovery snapshot source=%s, cached discovered pairs=%d",
+        pair_refresher.snapshot_source,
+        repo.count_discovered_pairs(),
+    )
 
     discovered = pair_refresher.get_pairs()
     if discovered:
@@ -417,6 +447,9 @@ def main() -> None:
                     base_asset=dp.base_symbol,
                     quote_asset=dp.quote_symbol,
                     trade_size=config.trade_size,
+                    base_address=dp.base_address or None,
+                    quote_address=dp.quote_address or None,
+                    chain=dp.chain,
                 ))
                 seen.add(pair_name)
                 logger.info("  + %s on %s (%d DEXes, $%.0f vol)",
@@ -425,10 +458,30 @@ def main() -> None:
     else:
         logger.warning("Pair discovery returned 0 pairs — using config pairs only")
 
-    # --- Market ---
+    all_pairs = _build_pair_list(config)
+
+    # --- Factory pool discovery (runs once — pool addresses are immutable) ---
     rpc = get_rpc_overrides()
-    market = OnChainMarket(config, rpc_overrides=rpc or None)
-    scanner = OpportunityScanner(config)
+    try:
+        from registry.pool_discovery import discover_and_persist_pools
+        factory_count = discover_and_persist_pools(
+            repo=repo,
+            chains=["ethereum", "arbitrum", "base", "optimism"],
+            pairs=all_pairs,
+            rpc_overrides=rpc,
+        )
+        repo.set_checkpoint("factory_discovery_count", str(factory_count))
+        logger.info("Factory pool discovery: %d new pools found", factory_count)
+    except Exception as exc:
+        logger.warning("Factory pool discovery failed (non-fatal): %s", exc)
+
+    # --- Quote diagnostics ---
+    from observability.quote_diagnostics import QuoteDiagnostics
+    diagnostics = QuoteDiagnostics()
+
+    # --- Market ---
+    market = OnChainMarket(config, rpc_overrides=rpc or None, pairs=all_pairs, diagnostics=diagnostics)
+    scanner = OpportunityScanner(config, pairs=all_pairs)
 
     # --- Dashboard ---
     app = create_app(risk_policy=risk_policy, repo=repo, metrics=metrics)
@@ -459,9 +512,10 @@ def main() -> None:
         latency_tracker=latency_tracker,
     )
 
-    # Register scanner with API so it can be controlled via /scanner/start|stop.
-    from api.app import set_scanner_ref
+    # Register scanner and diagnostics with API.
+    from api.app import set_scanner_ref, set_diagnostics_ref
     set_scanner_ref(event_scanner)
+    set_diagnostics_ref(diagnostics)
 
     # Graceful shutdown.
     def _shutdown(sig, frame):

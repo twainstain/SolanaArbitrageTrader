@@ -10,7 +10,8 @@
   "slippage_bps": 10.0,
   "poll_interval_seconds": 15.0,
   "extra_pairs": [
-    {"pair": "WETH/USDT", "base_asset": "WETH", "quote_asset": "USDT", "trade_size": 1.0}
+    {"pair": "WETH/USDT", "base_asset": "WETH", "quote_asset": "USDT", "trade_size": 1.0},
+    {"pair": "OP/USDC", "base_asset": "OP", "quote_asset": "USDC", "trade_size": 250.0, "chain": "optimism"}
   ],
   "dexes": [
     {"name": "Uniswap-Ethereum",  "base_price": 0, "fee_bps": 5.0,  "volatility_bps": 0, "chain": "ethereum", "dex_type": "uniswap_v3"},
@@ -20,6 +21,9 @@
     {"name": "Uniswap-Base",      "base_price": 0, "fee_bps": 5.0,  "volatility_bps": 0, "chain": "base",     "dex_type": "uniswap_v3"},
     {"name": "Sushi-Base",        "base_price": 0, "fee_bps": 30.0, "volatility_bps": 0, "chain": "base",     "dex_type": "sushi_v3"},
     {"name": "Uniswap-Optimism",  "base_price": 0, "fee_bps": 5.0,  "volatility_bps": 0, "chain": "optimism", "dex_type": "uniswap_v3"},
-    {"name": "Sushi-Optimism",    "base_price": 0, "fee_bps": 30.0, "volatility_bps": 0, "chain": "optimism", "dex_type": "sushi_v3"}
+    {"name": "Sushi-Optimism",    "base_price": 0, "fee_bps": 30.0, "volatility_bps": 0, "chain": "optimism", "dex_type": "sushi_v3"},
+    {"name": "Velodrome-Optimism","base_price": 0, "fee_bps": 20.0, "volatility_bps": 0, "chain": "optimism", "dex_type": "velodrome_v2"},
+    {"name": "Aerodrome-Base",    "base_price": 0, "fee_bps": 20.0, "volatility_bps": 0, "chain": "base",     "dex_type": "aerodrome"},
+    {"name": "Camelot-Arbitrum",  "base_price": 0, "fee_bps": 15.0, "volatility_bps": 0, "chain": "arbitrum", "dex_type": "camelot_v3"}
   ]
 }

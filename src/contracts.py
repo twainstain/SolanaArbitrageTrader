@@ -236,6 +236,32 @@ VELO_FACTORY: dict[str, str] = {
     "base": "0x420DD381b31aEf6683db6B902084cB0FFECe40Da",      # Aerodrome
 }
 
+# Algebra V2 quoter ABI — struct-based params (used by newer Camelot deployments).
+ALGEBRA_V2_QUOTER_ABI = [
+    {
+        "inputs": [
+            {
+                "components": [
+                    {"name": "tokenIn", "type": "address"},
+                    {"name": "tokenOut", "type": "address"},
+                    {"name": "amountIn", "type": "uint256"},
+                    {"name": "limitSqrtPrice", "type": "uint160"},
+                ],
+                "name": "params",
+                "type": "tuple",
+            }
+        ],
+        "name": "quoteExactInputSingle",
+        "outputs": [
+            {"name": "amountOut", "type": "uint256"},
+            {"name": "fee", "type": "uint16"},
+        ],
+        "stateMutability": "nonpayable",
+        "type": "function",
+    }
+]
+
+# Algebra V1 quoter ABI — individual args (QuickSwap, older Camelot).
 QUICKSWAP_QUOTER_ABI = [
     {
         "inputs": [

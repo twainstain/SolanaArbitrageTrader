@@ -2,6 +2,7 @@
 
 import sys
 import time
+import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 import unittest
@@ -10,6 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from registry.discovery import DiscoveredPair
 from registry.pair_refresher import PairRefresher
+from persistence.db import init_db, close_db
+from persistence.repository import Repository
 
 
 def _fake_pairs(n=3):
@@ -165,6 +168,40 @@ class RefreshTimingTests(unittest.TestCase):
     def test_age_before_start(self):
         r = PairRefresher()
         self.assertEqual(r.last_refresh_age_minutes, -1)
+
+
+class PersistenceWarmStartTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.conn = init_db(self.tmp.name)
+        self.repo = Repository(self.conn)
+
+    def tearDown(self) -> None:
+        close_db()
+        Path(self.tmp.name).unlink(missing_ok=True)
+
+    @patch("registry.pair_refresher.discover_best_pairs")
+    def test_start_loads_cached_pairs_without_initial_network_refresh(self, mock_discover):
+        self.repo.replace_discovered_pairs(_fake_pairs(2))
+        r = PairRefresher(interval_seconds=9999, repository=self.repo)
+        r.start()
+        r.stop()
+
+        mock_discover.assert_not_called()
+        self.assertEqual(r.pair_count, 2)
+        self.assertEqual(r.snapshot_source, "db_cache")
+
+    @patch("registry.pair_refresher.discover_best_pairs")
+    def test_refresh_persists_pairs_to_repository(self, mock_discover):
+        mock_discover.return_value = _fake_pairs(3)
+        r = PairRefresher(interval_seconds=9999, repository=self.repo)
+        r.start()
+        r.stop()
+
+        stored = self.repo.get_discovered_pairs()
+        self.assertEqual(len(stored), 3)
+        self.assertEqual(stored[0].pair_name, "WETH/USDC-0")
+        self.assertEqual(r.snapshot_source, "network")
 
 
 if __name__ == "__main__":

@@ -38,6 +38,7 @@ _repo: Repository | None = None
 _metrics = MetricsCollector()
 _paused = False  # soft pause: stops new scans but lets in-flight trades complete
 _scanner_ref = None  # reference to EventDrivenScanner for start/stop via API
+_diagnostics = None  # reference to QuoteDiagnostics for /diagnostics/quotes
 
 # Basic auth credentials — from env or defaults for testing.
 DASHBOARD_USER = os.environ.get("DASHBOARD_USER", "admin")
@@ -71,6 +72,12 @@ def set_scanner_ref(scanner: object) -> None:
     """Set a reference to the EventDrivenScanner for API control."""
     global _scanner_ref
     _scanner_ref = scanner
+
+
+def set_diagnostics_ref(diagnostics: object) -> None:
+    """Set a reference to QuoteDiagnostics for /diagnostics/quotes."""
+    global _diagnostics
+    _diagnostics = diagnostics
 
 
 def create_app(
@@ -293,6 +300,32 @@ def create_app(
     @app.get("/metrics")
     def get_metrics():
         return _metrics.snapshot()
+
+    @app.get("/operations")
+    def get_operations():
+        repo = _get_repo()
+        return {
+            "db_backend": repo.conn.backend,
+            "discovered_pairs_count": repo.count_discovered_pairs(),
+            "enabled_pools_total": repo.count_enabled_pools(),
+            "discovery_snapshot_source": repo.get_checkpoint("discovery_snapshot_source") or "unknown",
+            "last_discovery_pair_count": int(repo.get_checkpoint("discovery_pair_count") or 0),
+            "last_monitored_pools_synced": int(repo.get_checkpoint("monitored_pools_synced") or 0),
+        }
+
+    # --- Diagnostics ---
+
+    @app.get("/diagnostics/quotes")
+    def get_quote_diagnostics():
+        """Per-DEX quote health: success rate, latency, last error."""
+        if _diagnostics is None:
+            return {"dexes": {}}
+        snapshot = _diagnostics.snapshot()
+        by_dex: dict[str, list] = {}
+        for key, data in snapshot.items():
+            dex = key.split(":", 1)[0]
+            by_dex.setdefault(dex, []).append({"key": key, **data})
+        return {"dexes": by_dex}
 
     # --- Dashboard ---
 

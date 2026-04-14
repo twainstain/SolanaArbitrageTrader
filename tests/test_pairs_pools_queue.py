@@ -12,6 +12,7 @@ from persistence.db import init_db, close_db
 from persistence.repository import Repository
 from pipeline.queue import CandidateQueue
 from models import Opportunity
+from registry.monitored_pools import sync_monitored_pools
 
 D = Decimal
 
@@ -106,6 +107,45 @@ class PoolTableTests(unittest.TestCase):
         self.repo.set_pool_enabled(pool_id, False)
         pools = self.repo.get_pools_for_pair(pair_id)
         self.assertEqual(len(pools), 0)
+
+    def test_save_pool_if_missing_is_idempotent(self):
+        pair_id = self.repo.save_pair("WETH/USDC", "ethereum", "WETH", "USDC")
+        created = self.repo.save_pool_if_missing(pair_id, "ethereum", "Uni", "0xaaa")
+        skipped = self.repo.save_pool_if_missing(pair_id, "ethereum", "Uni", "0xaaa")
+        self.assertIsNotNone(created)
+        self.assertIsNone(skipped)
+        pools = self.repo.get_pools_for_pair(pair_id)
+        self.assertEqual(len(pools), 1)
+
+
+class MonitoredPoolBootstrapTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.conn = init_db(self.tmp.name)
+        self.repo = Repository(self.conn)
+
+    def tearDown(self):
+        close_db()
+        Path(self.tmp.name).unlink(missing_ok=True)
+
+    def test_sync_monitored_pools_inserts_bootstrap_metadata(self):
+        inserted = sync_monitored_pools(self.repo)
+        self.assertGreater(inserted, 0)
+        pair = self.repo.get_pair("WETH/USDC")
+        self.assertIsNotNone(pair)
+        pools = self.repo.get_enabled_pools_for_pair_name("WETH/USDC", chain="ethereum")
+        self.assertGreaterEqual(len(pools), 2)
+
+    def test_sync_monitored_pools_is_idempotent(self):
+        first = sync_monitored_pools(self.repo)
+        second = sync_monitored_pools(self.repo)
+        self.assertGreater(first, 0)
+        self.assertEqual(second, 0)
+
+    def test_count_enabled_pools(self):
+        sync_monitored_pools(self.repo)
+        self.assertGreater(self.repo.count_enabled_pools(), 0)
+        self.assertGreater(self.repo.count_enabled_pools(chain="ethereum"), 0)
 
 
 # ---------------------------------------------------------------

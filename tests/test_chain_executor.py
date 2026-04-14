@@ -180,8 +180,150 @@ class DynamicPairResolutionTests(unittest.TestCase):
             "EXECUTOR_CONTRACT": "0x" + "cd" * 20,
         }):
             executor = ChainExecutor(bad_config)
+            bad_opp = Opportunity(
+                pair="SHIB/PEPE", buy_dex="Uniswap", sell_dex="PancakeSwap",
+                trade_size=1000.0, cost_to_buy_quote=1200.0,
+                proceeds_from_sell_quote=1210.0, gross_profit_quote=10.0,
+                net_profit_quote=8.0, net_profit_base=0.004,
+            )
             with self.assertRaises(ChainExecutorError):
-                executor._build_transaction(_make_opportunity())
+                executor._build_transaction(bad_opp)
+
+    @patch("chain_executor.Web3")
+    def test_build_transaction_uses_opportunity_pair_assets(self, mock_web3_cls) -> None:
+        mock_w3 = MagicMock()
+        mock_web3_cls.return_value = mock_w3
+        mock_web3_cls.HTTPProvider = MagicMock()
+        mock_web3_cls.to_checksum_address = lambda x: x
+        mock_w3.eth.account.from_key.return_value = MagicMock(address="0xfake")
+        mock_w3.eth.get_transaction_count.return_value = 0
+        mock_w3.eth.gas_price = 30_000_000_000
+        mock_w3.to_wei = lambda v, u: v * 1_000_000_000
+
+        mock_contract = MagicMock()
+        mock_contract.functions.executeArbitrage.return_value.build_transaction.return_value = {
+            "data": "0x", "from": "0xfake", "to": "0xcontract"
+        }
+        mock_w3.eth.contract.return_value = mock_contract
+
+        config = BotConfig(
+            pair="WETH/USDC", base_asset="WETH", quote_asset="USDC",
+            trade_size=1.0, min_profit_base=0.001, estimated_gas_cost_base=0.002,
+            flash_loan_fee_bps=9.0, flash_loan_provider="aave_v3",
+            slippage_bps=15.0, poll_interval_seconds=0.0,
+            dexes=[
+                DexConfig(name="Uniswap", base_price=0, fee_bps=30.0,
+                          volatility_bps=0, chain="arbitrum", dex_type="uniswap_v3"),
+                DexConfig(name="PancakeSwap", base_price=0, fee_bps=25.0,
+                          volatility_bps=0, chain="arbitrum", dex_type="pancakeswap_v3"),
+            ],
+        )
+        config.validate()
+
+        opp = Opportunity(
+            pair="ARB/USDC", buy_dex="Uniswap", sell_dex="PancakeSwap",
+            trade_size=1000.0, cost_to_buy_quote=1200.0,
+            proceeds_from_sell_quote=1210.0, gross_profit_quote=10.0,
+            net_profit_quote=8.0, net_profit_base=0.004,
+        )
+
+        with patch.dict("os.environ", {
+            "EXECUTOR_PRIVATE_KEY": "0x" + "ab" * 32,
+            "EXECUTOR_CONTRACT": "0x" + "cd" * 20,
+        }):
+            executor = ChainExecutor(config)
+            executor._build_transaction(opp)
+
+        params = mock_contract.functions.executeArbitrage.call_args[0][0]
+        self.assertEqual(params[0], "0x912CE59144191C1204E64559FE8253a0e49E6548")
+        self.assertEqual(params[1], "0xaf88d065e77c8cC2239327C5EDb3A432268e5831")
+
+    def test_execute_rejects_cross_chain_opportunity(self) -> None:
+        with patch.dict("os.environ", {
+            "EXECUTOR_PRIVATE_KEY": "0x" + "ab" * 32,
+            "EXECUTOR_CONTRACT": "0x" + "cd" * 20,
+        }):
+            with patch("chain_executor.Web3") as mock_web3_cls:
+                mock_w3 = MagicMock()
+                mock_web3_cls.return_value = mock_w3
+                mock_web3_cls.HTTPProvider = MagicMock()
+                mock_web3_cls.to_checksum_address = lambda x: x
+                mock_w3.eth.account.from_key.return_value = MagicMock(address="0xfake_wallet")
+                executor = ChainExecutor(_make_config())
+
+            opp = Opportunity(
+                pair="WETH/USDC", buy_dex="Uniswap-Ethereum", sell_dex="PancakeSwap-Arbitrum",
+                trade_size=1.0, cost_to_buy_quote=2200.0,
+                proceeds_from_sell_quote=2210.0, gross_profit_quote=10.0,
+                net_profit_quote=8.0, net_profit_base=0.004,
+            )
+            result = executor.execute(opp)
+            self.assertFalse(result.success)
+            self.assertEqual(result.reason, "cross_chain_execution_not_supported")
+
+
+class SolidlyExecutionGuardTests(unittest.TestCase):
+    @patch("chain_executor.Web3")
+    def test_resolve_router_rejects_velodrome(self, mock_web3_cls) -> None:
+        mock_w3 = MagicMock()
+        mock_web3_cls.return_value = mock_w3
+        mock_web3_cls.HTTPProvider = MagicMock()
+        mock_web3_cls.to_checksum_address = lambda x: x
+        mock_w3.eth.account.from_key.return_value = MagicMock(address="0xfake")
+
+        config = BotConfig(
+            pair="OP/USDC", base_asset="OP", quote_asset="USDC",
+            trade_size=250.0, min_profit_base=0.001, estimated_gas_cost_base=0.002,
+            flash_loan_fee_bps=9.0, flash_loan_provider="aave_v3",
+            slippage_bps=15.0, poll_interval_seconds=0.0,
+            dexes=[
+                DexConfig(name="Velodrome-Optimism", base_price=0, fee_bps=20.0,
+                          volatility_bps=0, chain="optimism", dex_type="velodrome_v2"),
+                DexConfig(name="Uniswap-Optimism", base_price=0, fee_bps=5.0,
+                          volatility_bps=0, chain="optimism", dex_type="uniswap_v3"),
+            ],
+        )
+        config.validate()
+
+        with patch.dict("os.environ", {
+            "EXECUTOR_PRIVATE_KEY": "0x" + "ab" * 32,
+            "EXECUTOR_CONTRACT": "0x" + "cd" * 20,
+        }):
+            executor = ChainExecutor(config)
+            with self.assertRaises(ChainExecutorError) as ctx:
+                executor._resolve_router("Velodrome-Optimism")
+            self.assertIn("Solidly", str(ctx.exception))
+
+    @patch("chain_executor.Web3")
+    def test_resolve_router_rejects_aerodrome(self, mock_web3_cls) -> None:
+        mock_w3 = MagicMock()
+        mock_web3_cls.return_value = mock_w3
+        mock_web3_cls.HTTPProvider = MagicMock()
+        mock_web3_cls.to_checksum_address = lambda x: x
+        mock_w3.eth.account.from_key.return_value = MagicMock(address="0xfake")
+
+        config = BotConfig(
+            pair="WETH/USDC", base_asset="WETH", quote_asset="USDC",
+            trade_size=1.0, min_profit_base=0.001, estimated_gas_cost_base=0.002,
+            flash_loan_fee_bps=9.0, flash_loan_provider="aave_v3",
+            slippage_bps=15.0, poll_interval_seconds=0.0,
+            dexes=[
+                DexConfig(name="Aerodrome-Base", base_price=0, fee_bps=20.0,
+                          volatility_bps=0, chain="base", dex_type="aerodrome"),
+                DexConfig(name="Uniswap-Base", base_price=0, fee_bps=5.0,
+                          volatility_bps=0, chain="base", dex_type="uniswap_v3"),
+            ],
+        )
+        config.validate()
+
+        with patch.dict("os.environ", {
+            "EXECUTOR_PRIVATE_KEY": "0x" + "ab" * 32,
+            "EXECUTOR_CONTRACT": "0x" + "cd" * 20,
+        }):
+            executor = ChainExecutor(config)
+            with self.assertRaises(ChainExecutorError) as ctx:
+                executor._resolve_router("Aerodrome-Base")
+            self.assertIn("Solidly", str(ctx.exception))
 
 
 class GasEstimationTests(unittest.TestCase):

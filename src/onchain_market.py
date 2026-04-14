@@ -60,7 +60,7 @@ BACKUP_RPC_URLS: dict[str, list[str]] = {
     "bsc": ["https://bsc-dataseed.binance.org", "https://bsc-dataseed1.defibit.io"],
 }
 from data.liquidity_cache import LiquidityCache
-from models import BPS_DIVISOR, MarketQuote
+from models import BPS_DIVISOR, ZERO, MarketQuote
 from tokens import CHAIN_TOKENS, token_decimals
 
 D = Decimal
@@ -392,6 +392,15 @@ class OnChainMarket:
                 pair_def.quote_asset,
             )
 
+            # Estimate pool liquidity from price impact.
+            try:
+                estimated_tvl = self._estimate_liquidity_usd(
+                    chain, base_addr, quote_addr, dex_type,
+                    pair_def.base_asset, pair_def.quote_asset, mid,
+                )
+            except Exception:
+                estimated_tvl = D("0")
+
             # On-chain quoters return output AFTER the pool fee is deducted.
             # Set fee_included=True so strategy.evaluate_pair skips its own
             # fee adjustment.  fee_bps carries the actual pool fee tier for
@@ -403,6 +412,7 @@ class OnChainMarket:
                 sell_price=mid,
                 fee_bps=actual_fee_bps,
                 fee_included=True,
+                liquidity_usd=estimated_tvl,
             )
 
         # Fetch all DEX quotes in parallel.
@@ -419,6 +429,11 @@ class OnChainMarket:
                 cache_dex = f"{dex.name}:{pair_def.pair_name}"  # type: ignore[union-attr]
                 if cache.should_skip(cache_dex, chain):
                     _logger.debug("Cache skip: %s on %s", cache_dex, chain)
+                    if self.diagnostics:
+                        from observability.quote_diagnostics import QuoteOutcome
+                        self.diagnostics.record(
+                            dex.name, chain, pair_def.pair_name, QuoteOutcome.CACHED_SKIP,  # type: ignore[union-attr]
+                        )
                     continue
                 active_requests.append((dex, pair_def, cache_dex, chain))
 
@@ -444,10 +459,20 @@ class OnChainMarket:
                     "RPC call exceeded 15s deadline",
                     ttl_override=15 * 60,
                 )
+                if self.diagnostics:
+                    from observability.quote_diagnostics import QuoteOutcome
+                    self.diagnostics.record(
+                        dex.name, chain, pair_def.pair_name, QuoteOutcome.TIMEOUT,  # type: ignore[union-attr]
+                    )
             for future in done:
                 dex, pair_def, cache_dex, chain = futures[future]
                 try:
                     quotes.append(future.result())
+                    if self.diagnostics:
+                        from observability.quote_diagnostics import QuoteOutcome
+                        self.diagnostics.record(
+                            dex.name, chain, pair_def.pair_name, QuoteOutcome.SUCCESS,  # type: ignore[union-attr]
+                        )
                 except Exception as exc:
                     _logger.warning(
                         "Skipping %s on %s for %s: %s",
@@ -467,10 +492,66 @@ class OnChainMarket:
                         str(exc),
                         ttl_override=ttl,
                     )
+                    if self.diagnostics:
+                        from observability.quote_diagnostics import QuoteOutcome
+                        outcome = QuoteOutcome.ZERO if "zero" in err_str else QuoteOutcome.ERROR
+                        self.diagnostics.record(
+                            dex.name, chain, pair_def.pair_name, outcome,  # type: ignore[union-attr]
+                            error_msg=str(exc)[:200],
+                        )
         finally:
             pool.shutdown(wait=False)  # Don't wait for hung threads
 
         return quotes
+
+    # ------------------------------------------------------------------
+    # Liquidity estimation
+    # ------------------------------------------------------------------
+
+    # Sentinel: pool is deep enough that price impact is negligible.
+    _DEEP_POOL_TVL = D("100000000")  # $100M
+
+    def _estimate_liquidity_usd(
+        self,
+        chain: str,
+        base: str,
+        quote: str,
+        dex_type: str,
+        base_symbol: str,
+        quote_symbol: str,
+        normal_price: Decimal,
+    ) -> Decimal:
+        """Estimate pool TVL from price impact between small and normal quotes.
+
+        Math (constant-product approximation):
+          impact = |small_price - normal_price| / small_price
+          tvl ≈ trade_size_usd / (2 * impact)
+
+        Example: 0.01 WETH → $2344, 1 WETH → $2292 → 2.2% impact
+          tvl ≈ $2292 / (2 * 0.022) ≈ $52K — thin pool.
+
+        Returns ``D("0")`` on failure (caller treats as "unknown, don't filter").
+        """
+        _ZERO = D("0")
+        if normal_price <= _ZERO:
+            return _ZERO
+        try:
+            small_price = self._quote_small_amount(
+                chain, base, quote, dex_type, base_symbol, quote_symbol,
+            )
+        except Exception:
+            return _ZERO
+        if small_price <= _ZERO:
+            return _ZERO
+
+        impact = abs(small_price - normal_price) / small_price
+        if impact <= _ZERO:
+            return self._DEEP_POOL_TVL
+
+        trade_size_usd = normal_price  # 1 unit of base at this price
+        tvl = trade_size_usd / (TWO * impact)
+        # Cap at $10B to avoid absurd estimates from near-zero impact.
+        return min(tvl, D("10000000000"))
 
     # ------------------------------------------------------------------
     # Price impact estimation

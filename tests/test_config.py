@@ -191,6 +191,44 @@ class ConfigFromFileTests(unittest.TestCase):
         self.assertEqual(config.min_profit_base, Decimal("0.01"))
         self.assertEqual(config.estimated_gas_cost_base, Decimal("0.003"))
 
+    def test_from_file_preserves_extra_pair_metadata(self) -> None:
+        data = {
+            "pair": "WETH/USDC",
+            "base_asset": "WETH",
+            "quote_asset": "USDC",
+            "trade_size": 1.0,
+            "min_profit_base": 0.01,
+            "estimated_gas_cost_base": 0.003,
+            "flash_loan_fee_bps": 9.0,
+            "slippage_bps": 10.0,
+            "poll_interval_seconds": 0.5,
+            "extra_pairs": [
+                {
+                    "pair": "OP/USDC",
+                    "base_asset": "OP",
+                    "quote_asset": "USDC",
+                    "trade_size": 1500,
+                    "base_address": "0x4200000000000000000000000000000000000042",
+                    "quote_address": "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
+                    "chain": "optimism",
+                }
+            ],
+            "dexes": [
+                {"name": "A", "base_price": 3000.0, "fee_bps": 30.0, "volatility_bps": 10.0},
+                {"name": "B", "base_price": 3050.0, "fee_bps": 30.0, "volatility_bps": 10.0},
+            ],
+        }
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(data, f)
+            f.flush()
+            config = BotConfig.from_file(f.name)
+
+        self.assertIsNotNone(config.extra_pairs)
+        pair = config.extra_pairs[0]
+        self.assertEqual(pair.base_address, "0x4200000000000000000000000000000000000042")
+        self.assertEqual(pair.quote_address, "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85")
+        self.assertEqual(pair.chain, "optimism")
+
 
 class FlashLoanProvidersConstTests(unittest.TestCase):
     def test_expected_providers(self) -> None:

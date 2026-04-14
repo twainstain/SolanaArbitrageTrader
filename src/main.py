@@ -183,7 +183,7 @@ def main() -> None:
         from onchain_market import OnChainMarket
 
         rpc = get_rpc_overrides()
-        market = OnChainMarket(config, rpc_overrides=rpc or None)
+        market = OnChainMarket(config, rpc_overrides=rpc or None, pairs=discovered_pairs)
         logger.info("[mode] ON-CHAIN — querying DEX contracts via RPC")
     elif mode == "subgraph":
         from subgraph_market import SubgraphMarket

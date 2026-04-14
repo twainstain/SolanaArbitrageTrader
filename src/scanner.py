@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass
 from decimal import Decimal
 
-from config import BotConfig
+from config import BotConfig, PairConfig
 from log import get_logger
 from models import ZERO, MarketQuote, Opportunity
 
@@ -57,11 +57,12 @@ class OpportunityScanner:
         self,
         config: BotConfig,
         strategy: ArbitrageStrategy | None = None,
+        pairs: list[PairConfig] | None = None,
         alert_min_net_profit: Decimal = ZERO,
         alert_max_warning_flags: int = 1,
     ) -> None:
         self.config = config
-        self.strategy = strategy or ArbitrageStrategy(config)
+        self.strategy = strategy or ArbitrageStrategy(config, pairs=pairs)
         self.alert_min_net_profit = alert_min_net_profit
         self.alert_max_warning_flags = alert_max_warning_flags
         self._history: list[ScanResult] = []
@@ -205,11 +206,12 @@ class OpportunityScanner:
 
     def _emit_alert(self, opp: Opportunity) -> None:
         """Log an alert for an actionable opportunity."""
+        base_asset = opp.pair.split("/", 1)[0] if "/" in opp.pair else self.config.base_asset
         flags_str = ", ".join(opp.warning_flags) if opp.warning_flags else "none"
         logger.info(
             "ALERT: %s buy=%s sell=%s spread=%.2f%% net=%.6f %s "
             "liq_score=%.2f flags=[%s]",
             opp.pair, opp.buy_dex, opp.sell_dex,
             float(opp.gross_spread_pct), float(opp.net_profit_base),
-            self.config.base_asset, opp.liquidity_score, flags_str,
+            base_asset, opp.liquidity_score, flags_str,
         )

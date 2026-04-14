@@ -155,6 +155,9 @@ class BotConfig:
                     base_asset=p["base_asset"],
                     quote_asset=p["quote_asset"],
                     trade_size=D(str(p["trade_size"])),
+                    base_address=p.get("base_address"),
+                    quote_address=p.get("quote_address"),
+                    chain=p.get("chain"),
                 )
                 for p in data["extra_pairs"]
             ]

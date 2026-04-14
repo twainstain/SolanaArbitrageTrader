@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 from registry.discovery import DiscoveredPair, discover_best_pairs
 from tokens import register_token
+from persistence.repository import Repository
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ class PairRefresher:
         min_dex_count: int = 2,
         max_results: int = 20,
         interval_seconds: float = DEFAULT_INTERVAL,
+        repository: Repository | None = None,
     ) -> None:
         self.chains = chains or [
             "ethereum", "arbitrum", "base", "polygon",
@@ -47,20 +49,25 @@ class PairRefresher:
         self.min_dex_count = min_dex_count
         self.max_results = max_results
         self.interval = interval_seconds
+        self.repository = repository
         self._pairs: list[DiscoveredPair] = []
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._running = False
         self._last_refresh: float = 0
         self._refresh_count = 0
+        self._snapshot_source = "none"
 
     def start(self) -> None:
         """Start background refresh thread. Does an immediate first refresh."""
         if self._running:
             return
         self._running = True
-        # Do first refresh synchronously so pairs are available immediately.
-        self._refresh()
+        loaded_cached = self._load_cached_pairs()
+        # If no cached snapshot exists, do the first refresh synchronously so
+        # pairs are available immediately.
+        if not loaded_cached:
+            self._refresh()
         # Then start background thread for periodic refreshes.
         self._thread = threading.Thread(target=self._loop, daemon=True, name="pair-refresher")
         self._thread.start()
@@ -93,6 +100,7 @@ class PairRefresher:
             return {
                 "pair_count": len(self._pairs),
                 "refresh_count": self._refresh_count,
+                "snapshot_source": self._snapshot_source,
                 "last_refresh_age_minutes": round(self.last_refresh_age_minutes, 1),
                 "interval_minutes": round(self.interval / 60, 1),
                 "chains": self.chains,
@@ -128,6 +136,9 @@ class PairRefresher:
                 self._pairs = pairs
                 self._last_refresh = time.monotonic()
                 self._refresh_count += 1
+                self._snapshot_source = "network"
+            if self.repository is not None:
+                self.repository.replace_discovered_pairs(pairs)
             logger.info("Pair refresh complete: %d pairs found", len(pairs))
             for p in pairs[:5]:
                 logger.info("  %s on %s — %d DEXes, $%.0f vol, $%.0f liq",
@@ -135,6 +146,36 @@ class PairRefresher:
                            p.total_volume_24h, p.total_liquidity)
         except Exception as e:
             logger.error("Pair refresh failed: %s", e)
+
+    def _load_cached_pairs(self) -> bool:
+        """Warm the in-memory snapshot from persisted discovery metadata."""
+        if self.repository is None:
+            return False
+        try:
+            pairs = self.repository.get_discovered_pairs(limit=self.max_results)
+        except Exception as exc:
+            logger.warning("Failed to load cached discovered pairs: %s", exc)
+            return False
+        if not pairs:
+            return False
+
+        for p in pairs:
+            if p.base_address and p.base_symbol:
+                register_token(p.chain, p.base_symbol, p.base_address)
+            if p.quote_address and p.quote_symbol:
+                register_token(p.chain, p.quote_symbol, p.quote_address)
+
+        with self._lock:
+            self._pairs = pairs
+            self._last_refresh = time.monotonic()
+            self._snapshot_source = "db_cache"
+        logger.info("Loaded %d cached discovered pairs from DB snapshot", len(pairs))
+        return True
+
+    @property
+    def snapshot_source(self) -> str:
+        with self._lock:
+            return self._snapshot_source
 
     def _loop(self) -> None:
         """Background loop — refresh at interval."""

@@ -2,11 +2,14 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 import unittest
+import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from config import BotConfig, DexConfig
-from event_listener import SwapEventListener, SWAP_EVENT_TOPIC
+from config import BotConfig, DexConfig, PairConfig
+from event_listener import SwapEventListener, SWAP_EVENT_TOPIC, SOLIDLY_SWAP_EVENT_TOPIC
+from persistence.db import init_db, close_db
+from persistence.repository import Repository
 
 
 def _make_onchain_config() -> BotConfig:
@@ -37,6 +40,13 @@ class SwapEventTopicTests(unittest.TestCase):
         self.assertTrue(SWAP_EVENT_TOPIC.startswith("0x"))
         self.assertEqual(len(SWAP_EVENT_TOPIC), 66)  # 0x + 64 hex chars
 
+    def test_solidly_topic_is_hex_string(self) -> None:
+        self.assertTrue(SOLIDLY_SWAP_EVENT_TOPIC.startswith("0x"))
+        self.assertEqual(len(SOLIDLY_SWAP_EVENT_TOPIC), 66)
+
+    def test_solidly_topic_differs_from_v3(self) -> None:
+        self.assertNotEqual(SWAP_EVENT_TOPIC, SOLIDLY_SWAP_EVENT_TOPIC)
+
 
 class SwapEventListenerInitTests(unittest.TestCase):
     @patch("event_listener.OnChainMarket")
@@ -62,6 +72,65 @@ class SwapEventListenerInitTests(unittest.TestCase):
         pools = listener.pools_to_monitor
         self.assertIsInstance(pools, list)
         self.assertGreater(len(pools), 0)
+
+    @patch("event_listener.OnChainMarket")
+    @patch("event_listener.Web3")
+    def test_pools_to_monitor_includes_extra_pairs_when_known(self, mock_web3_cls, mock_market_cls) -> None:
+        mock_web3_cls.return_value = MagicMock()
+        mock_web3_cls.HTTPProvider = MagicMock()
+
+        config = _make_onchain_config()
+        object.__setattr__(config, "extra_pairs", [
+            PairConfig(pair="WETH/USDT", base_asset="WETH", quote_asset="USDT", trade_size=1.0),
+        ])
+        listener = SwapEventListener(config)
+        pools = listener.pools_to_monitor
+        self.assertGreaterEqual(len(pools), 3)
+
+    @patch("event_listener.OnChainMarket")
+    @patch("event_listener.Web3")
+    def test_market_and_scanner_receive_pair_aware_config(self, mock_web3_cls, mock_market_cls) -> None:
+        mock_web3_cls.return_value = MagicMock()
+        mock_web3_cls.HTTPProvider = MagicMock()
+
+        config = _make_onchain_config()
+        object.__setattr__(config, "extra_pairs", [
+            PairConfig(
+                pair="OP/USDC",
+                base_asset="OP",
+                quote_asset="USDC",
+                trade_size=250.0,
+                chain="optimism",
+            ),
+        ])
+
+        listener = SwapEventListener(config)
+
+        self.assertEqual([p.pair for p in listener._pairs], ["WETH/USDC", "OP/USDC"])
+        market_pairs = mock_market_cls.call_args.kwargs["pairs"]
+        self.assertEqual([p.pair for p in market_pairs], ["WETH/USDC", "OP/USDC"])
+        self.assertEqual(listener.scanner.strategy._pair_configs["OP/USDC"].chain, "optimism")
+
+    @patch("event_listener.OnChainMarket")
+    @patch("event_listener.Web3")
+    def test_pools_to_monitor_prefers_repository_metadata(self, mock_web3_cls, mock_market_cls) -> None:
+        mock_web3_cls.return_value = MagicMock()
+        mock_web3_cls.HTTPProvider = MagicMock()
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        conn = init_db(tmp.name)
+        repo = Repository(conn)
+        try:
+            pair_id = repo.save_pair("WETH/USDC", "ethereum", "WETH", "USDC")
+            repo.save_pool(pair_id, "ethereum", "Uni", "0xdeadbeef")
+
+            config = _make_onchain_config()
+            listener = SwapEventListener(config, repository=repo)
+            pools = listener.pools_to_monitor
+            self.assertEqual(pools, ["0xdeadbeef"])
+        finally:
+            close_db()
+            Path(tmp.name).unlink(missing_ok=True)
 
 
 class PollOnceTests(unittest.TestCase):
@@ -194,6 +263,19 @@ class ScannerIntegrationTests(unittest.TestCase):
         listener._poll_once(["0xfake"])
 
         self.assertEqual(len(listener.scanner.recent_history), 1)
+
+
+class MonitoredPoolsExpandedTests(unittest.TestCase):
+    def test_optimism_has_weth_usdc(self) -> None:
+        from registry.monitored_pools import MONITORED_POOLS
+        self.assertIn("optimism", MONITORED_POOLS)
+        self.assertIn("WETH/USDC", MONITORED_POOLS["optimism"])
+        self.assertGreater(len(MONITORED_POOLS["optimism"]["WETH/USDC"]), 0)
+
+    def test_optimism_has_op_usdc(self) -> None:
+        from registry.monitored_pools import MONITORED_POOLS
+        self.assertIn("OP/USDC", MONITORED_POOLS["optimism"])
+        self.assertGreater(len(MONITORED_POOLS["optimism"]["OP/USDC"]), 0)
 
 
 if __name__ == "__main__":

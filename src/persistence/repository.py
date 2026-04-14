@@ -14,6 +14,7 @@ from decimal import Decimal
 from typing import Any
 
 from persistence.db import DbConnection
+from registry.discovery import DiscoveredPair
 
 
 def _now() -> str:
@@ -116,14 +117,17 @@ class Repository:
         slippage_cost: Decimal,
         gas_estimate: Decimal,
         expected_net_profit: Decimal,
+        buy_liquidity_usd: Decimal = Decimal("0"),
+        sell_liquidity_usd: Decimal = Decimal("0"),
     ) -> int:
         cur = self.conn.execute(
             "INSERT INTO pricing_results "
             "(opportunity_id, input_amount, estimated_output, fee_cost, slippage_cost, "
-            "gas_estimate, expected_net_profit, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "gas_estimate, expected_net_profit, buy_liquidity_usd, sell_liquidity_usd, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (opp_id, str(input_amount), str(estimated_output), str(fee_cost),
-             str(slippage_cost), str(gas_estimate), str(expected_net_profit), _now()),
+             str(slippage_cost), str(gas_estimate), str(expected_net_profit),
+             str(buy_liquidity_usd), str(sell_liquidity_usd), _now()),
         )
         self.conn.commit()
         return cur.lastrowid  # type: ignore[return-value]
@@ -341,6 +345,13 @@ class Repository:
         ).fetchone()
         return _row_to_dict(row)
 
+    def get_pair_on_chain(self, pair: str, chain: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT * FROM pairs WHERE pair = ? AND chain = ?",
+            (pair, chain),
+        ).fetchone()
+        return _row_to_dict(row)
+
     def get_enabled_pairs(self) -> list[dict]:
         rows = self.conn.execute(
             "SELECT * FROM pairs WHERE enabled = 1 ORDER BY pair"
@@ -378,10 +389,52 @@ class Repository:
         self.conn.commit()
         return cur.lastrowid  # type: ignore[return-value]
 
+    def get_pool_by_address(self, address: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT * FROM pools WHERE address = ? LIMIT 1", (address,)
+        ).fetchone()
+        return _row_to_dict(row)
+
+    def save_pool_if_missing(
+        self,
+        pair_id: int,
+        chain: str,
+        dex: str,
+        address: str,
+        fee_tier_bps: Decimal = Decimal("30"),
+        dex_type: str = "uniswap_v3",
+        liquidity_class: str = "medium",
+    ) -> int | None:
+        existing = self.get_pool_by_address(address)
+        if existing is not None:
+            return None
+        return self.save_pool(
+            pair_id=pair_id,
+            chain=chain,
+            dex=dex,
+            address=address,
+            fee_tier_bps=fee_tier_bps,
+            dex_type=dex_type,
+            liquidity_class=liquidity_class,
+        )
+
     def get_pools_for_pair(self, pair_id: int) -> list[dict]:
         rows = self.conn.execute(
             "SELECT * FROM pools WHERE pair_id = ? AND enabled = 1", (pair_id,)
         ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_enabled_pools_for_pair_name(self, pair: str, chain: str | None = None) -> list[dict]:
+        sql = (
+            "SELECT pools.* FROM pools "
+            "JOIN pairs ON pairs.pair_id = pools.pair_id "
+            "WHERE pairs.pair = ? AND pools.enabled = 1"
+        )
+        params: tuple[Any, ...] = (pair,)
+        if chain is not None:
+            sql += " AND pools.chain = ?"
+            params += (chain,)
+        rows = self.conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
     def set_pool_enabled(self, pool_id: int, enabled: bool) -> None:
@@ -389,3 +442,80 @@ class Repository:
             "UPDATE pools SET enabled = ? WHERE pool_id = ?", (int(enabled), pool_id)
         )
         self.conn.commit()
+
+    # ------------------------------------------------------------------
+    # Discovered Pair Metadata
+    # ------------------------------------------------------------------
+
+    def replace_discovered_pairs(self, pairs: list[DiscoveredPair]) -> None:
+        """Replace the persisted discovery snapshot with the latest result set."""
+        now = _now()
+        with self.conn.batch():
+            self.conn.execute("DELETE FROM discovered_pairs")
+            for pair in pairs:
+                self.conn.execute(
+                    "INSERT INTO discovered_pairs "
+                    "(pair, chain, base_symbol, quote_symbol, dex_count, total_volume_24h, "
+                    "total_liquidity, dex_names_json, base_address, quote_address, "
+                    "is_blue_chip, arbitrage_score, refreshed_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        pair.pair_name,
+                        pair.chain,
+                        pair.base_symbol,
+                        pair.quote_symbol,
+                        pair.dex_count,
+                        pair.total_volume_24h,
+                        pair.total_liquidity,
+                        json.dumps(pair.dex_names),
+                        pair.base_address,
+                        pair.quote_address,
+                        int(pair.is_blue_chip),
+                        pair.arbitrage_score,
+                        now,
+                    ),
+                )
+
+    def get_discovered_pairs(self, limit: int | None = None) -> list[DiscoveredPair]:
+        sql = (
+            "SELECT pair, chain, base_symbol, quote_symbol, dex_count, total_volume_24h, "
+            "total_liquidity, dex_names_json, base_address, quote_address, is_blue_chip, "
+            "arbitrage_score FROM discovered_pairs ORDER BY arbitrage_score DESC, pair ASC"
+        )
+        params: tuple = ()
+        if limit is not None:
+            sql += " LIMIT ?"
+            params = (limit,)
+        rows = self.conn.execute(sql, params).fetchall()
+        return [
+            DiscoveredPair(
+                pair_name=row["pair"],
+                base_symbol=row["base_symbol"],
+                quote_symbol=row["quote_symbol"],
+                chain=row["chain"],
+                dex_count=row["dex_count"],
+                total_volume_24h=row["total_volume_24h"],
+                total_liquidity=row["total_liquidity"],
+                dex_names=json.loads(row["dex_names_json"]),
+                base_address=row["base_address"],
+                quote_address=row["quote_address"],
+                is_blue_chip=bool(row["is_blue_chip"]),
+                arbitrage_score=row["arbitrage_score"],
+            )
+            for row in rows
+        ]
+
+    def count_discovered_pairs(self) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) as cnt FROM discovered_pairs"
+        ).fetchone()
+        return row["cnt"] if row else 0
+
+    def count_enabled_pools(self, chain: str | None = None) -> int:
+        sql = "SELECT COUNT(*) as cnt FROM pools WHERE enabled = 1"
+        params: tuple[Any, ...] = ()
+        if chain is not None:
+            sql += " AND chain = ?"
+            params = (chain,)
+        row = self.conn.execute(sql, params).fetchone()
+        return row["cnt"] if row else 0

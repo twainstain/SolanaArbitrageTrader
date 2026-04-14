@@ -199,6 +199,25 @@ class StrategyWithMultiPairQuotesTests(unittest.TestCase):
         # This test documents the current behavior.
         # The BOT is responsible for filtering by pair before calling strategy.
 
+    def test_strategy_uses_pair_specific_trade_size_and_pair_name(self) -> None:
+        config = _make_multi_pair_config(
+            extra_pairs=[
+                PairConfig(pair="WBTC/USDC", base_asset="WBTC", quote_asset="USDC", trade_size=0.05),
+            ],
+        )
+        strategy = ArbitrageStrategy(config)
+
+        from models import MarketQuote
+        quotes = [
+            MarketQuote(dex="A", pair="WBTC/USDC", buy_price=70000.0, sell_price=69900.0, fee_bps=0.0),
+            MarketQuote(dex="B", pair="WBTC/USDC", buy_price=70600.0, sell_price=70500.0, fee_bps=0.0),
+        ]
+
+        opp = strategy.find_best_opportunity(quotes)
+        self.assertIsNotNone(opp)
+        self.assertEqual(opp.pair, "WBTC/USDC")
+        self.assertEqual(float(opp.trade_size), 0.05)
+
 
 if __name__ == "__main__":
     unittest.main()

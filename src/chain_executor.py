@@ -75,6 +75,10 @@ SWAP_ROUTERS: dict[str, dict[str, str]] = {
         "uniswap_v3": "0x2626664c2603336E57B271c5C0b26F421741e481",
         "pancakeswap_v3": "0x1b81D678ffb9C0263b24A97847620C99d213eB14",
     },
+    "optimism": {
+        "uniswap_v3": "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+        "sushi_v3": "0x8A21F6768C1f8075791D08546Dadf6daA0bE820c",
+    },
     "bsc": {
         "pancakeswap_v3": "0x1b81D678ffb9C0263b24A97847620C99d213eB14",
     },
@@ -182,6 +186,13 @@ class ChainExecutor:
         Returns ExecutionResult with success=True if the tx was mined
         successfully, or success=False with the revert/simulation reason.
         """
+        if opportunity.is_cross_chain:
+            return ExecutionResult(
+                success=False,
+                reason="cross_chain_execution_not_supported",
+                realized_profit_base=ZERO,
+                opportunity=opportunity,
+            )
         try:
             tx_data = self._build_transaction(opportunity)
 
@@ -257,24 +268,29 @@ class ChainExecutor:
         """
         from tokens import resolve_token_address, token_decimals
 
-        base_token = resolve_token_address(self.chain, self.config.base_asset)
-        quote_token = resolve_token_address(self.chain, self.config.quote_asset)
+        pair_parts = opportunity.pair.split("/", 1)
+        if len(pair_parts) != 2:
+            raise ChainExecutorError(f"Opportunity pair '{opportunity.pair}' is not base/quote formatted.")
+        base_asset, quote_asset = pair_parts
+
+        base_token = resolve_token_address(self.chain, base_asset)
+        quote_token = resolve_token_address(self.chain, quote_asset)
 
         if not base_token:
             raise ChainExecutorError(
-                f"Cannot resolve base asset '{self.config.base_asset}' "
+                f"Cannot resolve base asset '{base_asset}' "
                 f"on chain '{self.chain}'."
             )
         if not quote_token:
             raise ChainExecutorError(
-                f"Cannot resolve quote asset '{self.config.quote_asset}' "
+                f"Cannot resolve quote asset '{quote_asset}' "
                 f"on chain '{self.chain}'."
             )
 
         router_a = self._resolve_router(opportunity.buy_dex)
         router_b = self._resolve_router(opportunity.sell_dex)
 
-        quote_decimals = token_decimals(self.config.quote_asset)
+        quote_decimals = token_decimals(quote_asset)
         amount_in_raw = int(opportunity.cost_to_buy_quote * D(str(10 ** quote_decimals)))
         min_profit_raw = int(self.config.min_profit_base * opportunity.cost_to_buy_quote)
 
@@ -452,12 +468,21 @@ class ChainExecutor:
         tx_hash = Web3.keccak(signed_tx.rawTransaction)  # type: ignore[union-attr]
         return tx_hash
 
+    # Solidly-fork DEX types that use a different swap interface than V3
+    # exactInputSingle. The FlashArbExecutor contract only supports V3 routers.
+    _SOLIDLY_DEX_TYPES = frozenset({"velodrome_v2", "aerodrome"})
+
     def _resolve_router(self, dex_name: str) -> str:
         """Map a DEX name from the opportunity to its swap router address."""
         chain_routers = SWAP_ROUTERS.get(self.chain, {})
         # Try to match by dex_type from config.
         for dex in self.config.dexes:
             if dex.name == dex_name and dex.dex_type:
+                if dex.dex_type in self._SOLIDLY_DEX_TYPES:
+                    raise ChainExecutorError(
+                        f"Solidly-fork DEX '{dex_name}' ({dex.dex_type}) cannot be used "
+                        f"for execution — FlashArbExecutor only supports V3 routers."
+                    )
                 router = chain_routers.get(dex.dex_type)
                 if router:
                     return router

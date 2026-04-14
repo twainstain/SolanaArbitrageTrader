@@ -4,7 +4,7 @@
 
 ### Summary
 
-Production bot deployed on AWS EC2 with 22 DEX quoters implemented, dynamic pair discovery, thin pool detection. 571 tests. Currently debugging RPC call hangs.
+Production bot deployed on AWS EC2 with 22 DEX quoters implemented, dynamic pair discovery, thin pool detection. 618 tests. Fixed critical fee double-counting bug — on-chain quoters now surface real spreads (25-35 bps on major pairs).
 
 ### Deployed
 
@@ -17,33 +17,34 @@ Production bot deployed on AWS EC2 with 22 DEX quoters implemented, dynamic pair
 
 | Feature | Status |
 |---------|--------|
-| Pipeline (detect → price → risk) | Working, ~30ms |
-| Thin pool filter (5% global median) | Working |
+| Pipeline (detect → price → risk) | Working, ~6s per scan |
+| fee_included flag (no double-counting) | Working — real spreads surfacing |
+| On-chain quoters return actual fee tier | Working (V3: exact bps, others: estimated) |
+| Multi-pair scanning (WETH/USDC, WETH/USDT, OP/USDC) | Working |
+| Dashboard cost waterfall breakdown | Working |
+| Thin pool filter (5% global median) | Working (but misses ~4.8% outliers) |
 | Liquidity cache (3h/15min TTL) | Working |
-| Auto pair discovery (DexScreener hourly) | Working, finds 7+ pairs |
-| Dynamic token registry | Working, auto-registers from DexScreener |
-| Dashboard profit reports (per time window) | Working |
-| Cross-chain filter | Working |
+| Auto pair discovery (DexScreener hourly) | Working |
+| scripts/run_local.sh (local dev runner) | Working |
+
+### Latest Scan Results (onchain mode)
+
+| Chain | Pair | Spread | Status |
+|-------|------|--------|--------|
+| Ethereum | WETH/USDT | ~32 bps | Real, consistent |
+| Ethereum | WETH/USDC | ~19-28 bps | Real, consistent |
+| Base | WETH/USDC | ~23-29 bps | Real, consistent |
+| Arbitrum | WETH/USDC | ~12-13 bps | Real, consistent |
+| Arbitrum | WETH/USDT | ~480 bps | FALSE POSITIVE — Sushi stale pool |
 
 ### What Needs Fixing
 
 | Issue | Root Cause | Fix |
 |-------|-----------|-----|
-| **Scans hang on first cycle** | SushiSwap/PancakeSwap quoters hang on eth_call despite 8s HTTP timeout | Need `eth_call` level timeout or move to WebSocket RPCs |
-| Niche DEXes (Velodrome, Camelot, Aerodrome) | Contract calls hang | Debug ABI/contract interaction separately |
-| BSC WETH decimal mismatch | Returns $2.3 quadrillion | Need WBNB/USDT pair instead |
-| CI/CD test failure | Unknown — tests pass locally | Check GitHub Actions logs |
+| **Sushi-Arbitrum WETH/USDT outlier** | Returns $2231 (stale pool), 4.8% deviation slips under 5% filter | Tighten outlier filter or cross-validate against same-DEX other pairs |
+| **Optimism all DEXes returning zero** | Uniswap, Sushi, Velodrome all fail on Optimism | Debug token addresses / quoter contracts |
+| **Base USDT not in token registry** | Missing USDT address for Base chain | Add to tokens.py |
+| **OP/USDC only works on Optimism** | Other chains can't resolve OP token | Expected — OP is Optimism-native |
+| **CI/CD deploy fails** | AWS credentials not set in GitHub secrets | Set AWS_ACCESS_KEY_ID/SECRET in repo settings |
 
-### DEX Coverage (implemented in code)
-
-| DEX | Type | Chains | Status |
-|-----|------|--------|--------|
-| Uniswap V3 | V3 Quoter | ETH, ARB, BASE, OPT | Working |
-| SushiSwap V3 | V3 Quoter | ETH, ARB, BASE, OPT | Hanging on some chains |
-| PancakeSwap V3 | V3 Quoter | ETH, ARB, BASE | Hanging |
-| QuickSwap | Algebra | Polygon | Zero quotes |
-| Camelot V3 | Algebra | Arbitrum | Implemented, disabled (hangs) |
-| Velodrome V2 | Solidly Router | Optimism | Implemented, disabled (zero) |
-| Aerodrome | Solidly Router | Base | Implemented, disabled (hangs) |
-
-### Test Count: 571
+### Test Count: 618

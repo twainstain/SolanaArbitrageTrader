@@ -265,18 +265,28 @@ def main() -> None:
             )
             pipeline.process(opp)
 
-        # Also process the overall best (may be cross-chain).
+        # Check the overall best — only process if same-chain (executable).
         opp = result.best
-        logger.info(
-            "Best overall: %s buy=%s sell=%s spread=%.4f%% net=%.6f",
-            opp.pair, opp.buy_dex, opp.sell_dex,
-            float(opp.gross_spread_pct), float(opp.net_profit_base),
-        )
-        pipeline_result = pipeline.process(opp)
-        logger.info("Pipeline result: %s — %s", pipeline_result.final_status, pipeline_result.reason)
-        metrics.record_expected_profit(float(opp.net_profit_base))
+        buy_chain = opp.buy_dex.rsplit("-", 1)[-1].lower() if "-" in opp.buy_dex else opp.buy_dex.lower()
+        sell_chain = opp.sell_dex.rsplit("-", 1)[-1].lower() if "-" in opp.sell_dex else opp.sell_dex.lower()
 
-        logger.info("Processed %d same-chain + 1 overall opportunity", len(processed_chains))
+        if buy_chain == sell_chain:
+            logger.info(
+                "Best overall (same-chain): %s buy=%s sell=%s spread=%.4f%% net=%.6f",
+                opp.pair, opp.buy_dex, opp.sell_dex,
+                float(opp.gross_spread_pct), float(opp.net_profit_base),
+            )
+            pipeline_result = pipeline.process(opp)
+            logger.info("Pipeline result: %s — %s", pipeline_result.final_status, pipeline_result.reason)
+            metrics.record_expected_profit(float(opp.net_profit_base))
+        else:
+            logger.info(
+                "Best overall is CROSS-CHAIN (skipped): %s buy=%s sell=%s spread=%.4f%%",
+                opp.pair, opp.buy_dex, opp.sell_dex,
+                float(opp.gross_spread_pct),
+            )
+
+        logger.info("Processed %d same-chain opportunities", len(processed_chains))
 
         # Smart alerting: Telegram for big wins (>5%), hourly email otherwise.
         alerter.check_opportunity(

@@ -53,9 +53,10 @@ logger = get_logger(__name__)
 # event Swap(address indexed sender, address indexed recipient,
 #            int256 amount0, int256 amount1,
 #            uint160 sqrtPriceX96, uint128 liquidity, int24 tick)
-SWAP_EVENT_TOPIC = Web3.keccak(
+_raw = Web3.keccak(
     text="Swap(address,address,int256,int256,uint160,uint128,int24)"
 ).hex()
+SWAP_EVENT_TOPIC = _raw if _raw.startswith("0x") else f"0x{_raw}"
 
 # Well-known WETH/USDC pool addresses to monitor for swaps.
 MONITORED_POOLS: dict[str, list[str]] = {

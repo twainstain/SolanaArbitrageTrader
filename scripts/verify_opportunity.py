@@ -94,19 +94,41 @@ def fetch_opportunity(opp_id: str, api_url: str, user: str, password: str) -> di
         return None
 
 
+def _parse_url_or_id(value: str) -> tuple[str, str]:
+    """Parse a full URL or plain opp_id into (api_url, opp_id).
+
+    Accepts:
+      https://arb-trader.yeda-ai.com/opportunity/opp_fe3c82cbc001
+      opp_fe3c82cbc001
+    """
+    if value.startswith("http"):
+        # Extract opp_id and base URL from full URL
+        from urllib.parse import urlparse
+        parsed = urlparse(value)
+        path_parts = parsed.path.strip("/").split("/")
+        opp_id = path_parts[-1]  # last segment is the opp_id
+        api_url = f"{parsed.scheme}://{parsed.netloc}"
+        return api_url, opp_id
+    return "", value
+
+
 def main():
     parser = argparse.ArgumentParser(description="Verify an arbitrage opportunity against live prices")
-    parser.add_argument("opp_id", help="Opportunity ID (e.g. opp_58c6ff03da4d)")
-    parser.add_argument("--api-url", default="http://localhost:8000",
-                        help="Bot API URL (default: http://localhost:8000)")
+    parser.add_argument("opp_id_or_url",
+                        help="Opportunity ID or full URL (e.g. opp_58c6ff03da4d or https://arb-trader.yeda-ai.com/opportunity/opp_58c6ff03da4d)")
+    parser.add_argument("--api-url", default=None,
+                        help="Bot API URL (default: auto-detect from URL or http://localhost:8000)")
     args = parser.parse_args()
+
+    url_from_arg, opp_id = _parse_url_or_id(args.opp_id_or_url)
+    api_url = args.api_url or url_from_arg or "http://localhost:8000"
 
     import os
     user = os.environ.get("DASHBOARD_USER", "admin")
     password = os.environ.get("DASHBOARD_PASS", "adminTest")
 
-    print(f"Fetching opportunity {args.opp_id}...")
-    data = fetch_opportunity(args.opp_id, args.api_url, user, password)
+    print(f"Fetching opportunity {opp_id} from {api_url}...")
+    data = fetch_opportunity(opp_id, api_url, user, password)
     if not data:
         sys.exit(1)
 

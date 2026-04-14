@@ -20,6 +20,14 @@ from alerting.gmail import GmailAlert
 D = Decimal
 
 
+# Unconfigured backend singletons — prevent tests from reading .env and
+# sending real alerts.  Every SmartAlerter in tests should use these as
+# defaults for any backend not explicitly under test.
+_SAFE_TG = TelegramAlert(bot_token="", chat_id="")
+_SAFE_DC = DiscordAlert(webhook_url="")
+_SAFE_GM = GmailAlert(address="", app_password="", recipient="")
+
+
 class _AlertTestBase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
@@ -36,7 +44,7 @@ class BigWinTelegramTests(_AlertTestBase):
     def test_sends_telegram_for_big_spread(self, mock_post):
         mock_post.return_value = MagicMock(status_code=200)
         tg = TelegramAlert(bot_token="123:ABC", chat_id="999")
-        alerter = SmartAlerter(repo=self.repo, telegram=tg)
+        alerter = SmartAlerter(repo=self.repo, telegram=tg, discord=_SAFE_DC, gmail=_SAFE_GM)
 
         alerter.check_opportunity(
             spread_pct=D("7.5"), pair="WETH/USDC",
@@ -53,7 +61,7 @@ class BigWinTelegramTests(_AlertTestBase):
     @patch("alerting.telegram.requests.post")
     def test_no_telegram_for_small_spread(self, mock_post):
         tg = TelegramAlert(bot_token="123:ABC", chat_id="999")
-        alerter = SmartAlerter(repo=self.repo, telegram=tg)
+        alerter = SmartAlerter(repo=self.repo, telegram=tg, discord=_SAFE_DC, gmail=_SAFE_GM)
 
         alerter.check_opportunity(
             spread_pct=D("1.5"), pair="WETH/USDC",
@@ -78,7 +86,7 @@ class BigWinDiscordTests(_AlertTestBase):
     def test_sends_discord_for_big_spread(self, mock_post):
         mock_post.return_value = MagicMock(status_code=204)
         dc = DiscordAlert(webhook_url="https://discord.com/api/webhooks/fake")
-        alerter = SmartAlerter(repo=self.repo, discord=dc)
+        alerter = SmartAlerter(repo=self.repo, telegram=_SAFE_TG, discord=dc, gmail=_SAFE_GM)
 
         alerter.check_opportunity(
             spread_pct=D("7.5"), pair="WETH/USDC",
@@ -92,7 +100,7 @@ class BigWinDiscordTests(_AlertTestBase):
     @patch("alerting.discord.requests.post")
     def test_no_discord_for_small_spread(self, mock_post):
         dc = DiscordAlert(webhook_url="https://discord.com/api/webhooks/fake")
-        alerter = SmartAlerter(repo=self.repo, discord=dc)
+        alerter = SmartAlerter(repo=self.repo, telegram=_SAFE_TG, discord=dc, gmail=_SAFE_GM)
 
         alerter.check_opportunity(
             spread_pct=D("1.5"), pair="WETH/USDC",
@@ -106,7 +114,7 @@ class BigWinDiscordTests(_AlertTestBase):
 
         tg = TelegramAlert(bot_token="123:ABC", chat_id="999")
         dc = DiscordAlert(webhook_url="https://discord.com/api/webhooks/fake")
-        alerter = SmartAlerter(repo=self.repo, telegram=tg, discord=dc)
+        alerter = SmartAlerter(repo=self.repo, telegram=tg, discord=dc, gmail=_SAFE_GM)
 
         alerter.check_opportunity(
             spread_pct=D("8.0"), pair="WETH/USDC",
@@ -150,7 +158,7 @@ class HourlyEmailTests(_AlertTestBase):
         mock_smtp_cls.return_value.__exit__ = MagicMock(return_value=False)
 
         gm = GmailAlert(address="a@g.com", app_password="pw", recipient="b@g.com")
-        alerter = SmartAlerter(repo=self.repo, gmail=gm, dashboard_url="http://test:8000/dashboard")
+        alerter = SmartAlerter(repo=self.repo, telegram=_SAFE_TG, discord=_SAFE_DC, gmail=gm, dashboard_url="http://test:8000/dashboard")
 
         # Seed some data.
         self.repo.create_opportunity(
@@ -170,7 +178,7 @@ class HourlyEmailTests(_AlertTestBase):
         mock_smtp_cls.return_value.__exit__ = MagicMock(return_value=False)
 
         gm = GmailAlert(address="a@g.com", app_password="pw", recipient="b@g.com")
-        alerter = SmartAlerter(repo=self.repo, gmail=gm, dashboard_url="http://dash:8000/dashboard")
+        alerter = SmartAlerter(repo=self.repo, telegram=_SAFE_TG, discord=_SAFE_DC, gmail=gm, dashboard_url="http://dash:8000/dashboard")
 
         alerter.send_hourly_report()
         body = self._decode_email_body(mock_server.sendmail.call_args[0][2])
@@ -182,7 +190,7 @@ class HourlyEmailTests(_AlertTestBase):
 
     def test_no_crash_when_gmail_unconfigured(self):
         gm = GmailAlert(address="", app_password="", recipient="")
-        alerter = SmartAlerter(repo=self.repo, gmail=gm)
+        alerter = SmartAlerter(repo=self.repo, telegram=_SAFE_TG, discord=_SAFE_DC, gmail=gm)
         alerter.send_hourly_report()  # should not crash
 
     @patch("alerting.gmail.smtplib.SMTP")
@@ -192,7 +200,7 @@ class HourlyEmailTests(_AlertTestBase):
         mock_smtp_cls.return_value.__exit__ = MagicMock(return_value=False)
 
         gm = GmailAlert(address="a@g.com", app_password="pw", recipient="b@g.com")
-        alerter = SmartAlerter(repo=self.repo, gmail=gm, email_interval_seconds=9999)
+        alerter = SmartAlerter(repo=self.repo, telegram=_SAFE_TG, discord=_SAFE_DC, gmail=gm, email_interval_seconds=9999)
 
         alerter.maybe_send_hourly()
         # Interval not elapsed → should NOT send.
@@ -205,7 +213,7 @@ class HourlyEmailTests(_AlertTestBase):
         mock_smtp_cls.return_value.__exit__ = MagicMock(return_value=False)
 
         gm = GmailAlert(address="a@g.com", app_password="pw", recipient="b@g.com")
-        alerter = SmartAlerter(repo=self.repo, gmail=gm, email_interval_seconds=1)
+        alerter = SmartAlerter(repo=self.repo, telegram=_SAFE_TG, discord=_SAFE_DC, gmail=gm, email_interval_seconds=1)
 
         # Push _last_email_at back to force trigger.
         alerter._last_email_at = time.time() - 2
@@ -218,8 +226,10 @@ class HourlyDiscordTests(_AlertTestBase):
     @patch("alerting.discord.requests.post")
     def test_sends_hourly_discord_report(self, mock_post):
         mock_post.return_value = MagicMock(status_code=204)
+        tg = TelegramAlert(bot_token="", chat_id="")
         dc = DiscordAlert(webhook_url="https://discord.com/api/webhooks/fake")
-        alerter = SmartAlerter(repo=self.repo, discord=dc, dashboard_url="http://test:8000/dashboard")
+        gm = GmailAlert(address="", app_password="", recipient="")
+        alerter = SmartAlerter(repo=self.repo, telegram=tg, discord=dc, gmail=gm, dashboard_url="http://test:8000/dashboard")
 
         alerter.send_hourly_report()
         mock_post.assert_called_once()
@@ -236,7 +246,7 @@ class HourlyDiscordTests(_AlertTestBase):
 
         gm = GmailAlert(address="a@g.com", app_password="pw", recipient="b@g.com")
         dc = DiscordAlert(webhook_url="https://discord.com/api/webhooks/fake")
-        alerter = SmartAlerter(repo=self.repo, gmail=gm, discord=dc)
+        alerter = SmartAlerter(repo=self.repo, telegram=_SAFE_TG, gmail=gm, discord=dc)
 
         alerter.send_hourly_report()
         mock_server.sendmail.assert_called_once()
@@ -244,7 +254,7 @@ class HourlyDiscordTests(_AlertTestBase):
 
     def test_no_crash_when_discord_unconfigured(self):
         dc = DiscordAlert(webhook_url="")
-        alerter = SmartAlerter(repo=self.repo, discord=dc)
+        alerter = SmartAlerter(repo=self.repo, telegram=_SAFE_TG, discord=dc, gmail=_SAFE_GM)
         alerter.send_hourly_report()  # should not crash
 
 

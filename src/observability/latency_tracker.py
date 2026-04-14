@@ -72,6 +72,11 @@ class LatencyTracker:
             elapsed_ms = (time.monotonic() - self._scan.started_at) * 1000
             self._scan.marks[stage] = round(elapsed_ms, 2)
 
+    def get_scan_marks(self) -> dict:
+        """Return a snapshot of current scan marks (thread-safe copy)."""
+        with self._lock:
+            return dict(self._scan.marks)
+
     def record_pipeline(
         self,
         opp_id: str,
@@ -83,8 +88,15 @@ class LatencyTracker:
         net_profit: float,
         status: str,
         pipeline_timings: dict,
+        scan_marks: dict | None = None,
     ) -> None:
-        """Record a full pipeline execution with all timing data."""
+        """Record a full pipeline execution with all timing data.
+
+        Args:
+            scan_marks: Snapshot of scan marks from when the opportunity was
+                        queued. If None, falls back to current scan marks
+                        (may be stale if a new scan has started).
+        """
         with self._lock:
             total_scan_ms = (time.monotonic() - self._scan.started_at) * 1000
             record = {
@@ -98,8 +110,8 @@ class LatencyTracker:
                 "spread_pct": round(spread_pct, 4),
                 "net_profit": round(net_profit, 8),
                 "status": status,
-                # Scan-level timings (cumulative from scan start).
-                "scan_marks_ms": dict(self._scan.marks),
+                # Scan-level timings — use snapshot if available.
+                "scan_marks_ms": scan_marks if scan_marks is not None else dict(self._scan.marks),
                 # Pipeline-level timings (per stage).
                 "pipeline_ms": {k: round(float(v), 2) for k, v in pipeline_timings.items()},
                 # Total from scan start to this pipeline result.

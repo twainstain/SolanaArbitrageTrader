@@ -157,6 +157,7 @@ class PipelineConsumer:
                     net_profit=float(opp.net_profit_base),
                     status=result.final_status,
                     pipeline_timings={k: round(v, 2) for k, v in timings.items()},
+                    scan_marks=candidate.scan_marks,
                 )
 
             logger.info(
@@ -290,12 +291,16 @@ class EventDrivenScanner:
             if self.latency_tracker:
                 self.latency_tracker.mark("scanner")
 
+            # Snapshot scan marks so the consumer thread has them even
+            # after this thread starts a new scan (fixes empty scan_marks_ms).
+            scan_marks = self.latency_tracker.get_scan_marks() if self.latency_tracker else {}
+
             # Push all actionable opportunities to the queue.
             pushed = 0
             for opp in result.opportunities:
                 # Compute a priority score for queue ordering.
                 score = float(opp.net_profit_base) * (1 + opp.liquidity_score)
-                if self.queue.push(opp, priority=score):
+                if self.queue.push(opp, priority=score, scan_marks=scan_marks):
                     pushed += 1
                     self.metrics.record_opportunity_detected()
 
@@ -318,7 +323,7 @@ class EventDrivenScanner:
                 chain_opp = chain_strategy.find_best_opportunity(chain_quotes)
                 if chain_opp is not None:
                     score = float(chain_opp.net_profit_base) * 0.5
-                    if self.queue.push(chain_opp, priority=score):
+                    if self.queue.push(chain_opp, priority=score, scan_marks=scan_marks):
                         pushed += 1
                         self.metrics.record_opportunity_detected()
 

@@ -26,6 +26,7 @@ class QueuedCandidate:
     opportunity: Opportunity
     enqueued_at: float = 0.0
     priority: float = 0.0  # higher = more urgent (composite score)
+    scan_marks: dict = field(default_factory=dict)  # snapshot of scan timing marks
 
 
 class CandidateQueue:
@@ -51,13 +52,15 @@ class CandidateQueue:
     def is_empty(self) -> bool:
         return self.size == 0
 
-    def push(self, opportunity: Opportunity, priority: float = 0.0) -> bool:
+    def push(self, opportunity: Opportunity, priority: float = 0.0,
+             scan_marks: dict | None = None) -> bool:
         """Add a candidate to the queue. Returns False if it was dropped."""
         import time
         candidate = QueuedCandidate(
             opportunity=opportunity,
             enqueued_at=time.time(),
             priority=priority,
+            scan_marks=scan_marks or {},
         )
 
         with self._lock:

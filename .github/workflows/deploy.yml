@@ -85,13 +85,16 @@ jobs:
             set -e
             cd /opt/arb-trader
 
-            # Pull latest image
+            # Pull latest code (for compose file, configs, etc.)
+            git pull origin master --ff-only
+
+            # Login to ECR and pull latest image
             aws ecr get-login-password --region us-east-1 \
               | docker login --username AWS --password-stdin ${{ secrets.ECR_REGISTRY }}
             export ECR_REGISTRY=${{ secrets.ECR_REGISTRY }}
             docker compose pull bot
 
-            # Rolling restart — stop bot, start with new image
+            # Rolling restart
             docker compose up -d bot
 
             # Health check — wait up to 30s (auth required)

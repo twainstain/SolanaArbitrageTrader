@@ -125,11 +125,22 @@ class OnChainMarketQuoteTests(unittest.TestCase):
         # Mock Web3 so no real RPC connection is made.
         mock_w3 = MagicMock()
 
-        # Each contract call returns a mock with .call() returning the quoter result.
-        def make_contract_mock(price: float) -> MagicMock:
+        # Each contract call returns a mock that scales output with input amount.
+        # This is critical for thin pool detection: quoting 10 WETH should return
+        # ~10x the USDC of 1 WETH for a deep pool.
+        def make_contract_mock(price_per_weth: float) -> MagicMock:
             contract = MagicMock()
-            call_result = _mock_quoter_result(price)
-            contract.functions.quoteExactInputSingle.return_value.call.return_value = call_result
+
+            def quote_fn(params):
+                """Capture input amount and return scaled USDC."""
+                amount_in = params[2] if isinstance(params, (list, tuple)) else 10**18
+                weth_count = amount_in / 10**18
+                usdc_out = int(price_per_weth * weth_count * 10**6)
+                result_mock = MagicMock()
+                result_mock.call.return_value = [usdc_out, 0, 0, 150_000]
+                return result_mock
+
+            contract.functions.quoteExactInputSingle.side_effect = quote_fn
             return contract
 
         uni_contract = make_contract_mock(uni_price_usdc)
@@ -227,11 +238,15 @@ class OnChainMarketBalancerTests(unittest.TestCase):
 
         market._w3 = {"base": mock_w3}
 
-        # Uniswap mock
+        # Uniswap mock (scales with input amount for thin pool check)
         uni_contract = MagicMock()
-        uni_contract.functions.quoteExactInputSingle.return_value.call.return_value = [
-            int(2200 * 10**6), 0, 0, 150_000
-        ]
+        def scaled_quote_bal(params):
+            amount_in = params[2] if isinstance(params, (list, tuple)) else 10**18
+            usdc_out = int(2200 * (amount_in / 10**18) * 10**6)
+            result = MagicMock()
+            result.call.return_value = [usdc_out, 0, 0, 150_000]
+            return result
+        uni_contract.functions.quoteExactInputSingle.side_effect = scaled_quote_bal
 
         call_count = {"n": 0}
 
@@ -282,11 +297,15 @@ class OnChainMarketSushiTests(unittest.TestCase):
 
         market._w3 = {"base": mock_w3}
 
-        # Uniswap mock succeeds, Sushi will fail because we patch SUSHI_V3_QUOTER
+        # Uniswap mock succeeds (scales with input amount), Sushi will fail
         uni_contract = MagicMock()
-        uni_contract.functions.quoteExactInputSingle.return_value.call.return_value = [
-            int(2200 * 10**6), 0, 0, 150_000
-        ]
+        def scaled_quote(params):
+            amount_in = params[2] if isinstance(params, (list, tuple)) else 10**18
+            usdc_out = int(2200 * (amount_in / 10**18) * 10**6)
+            result = MagicMock()
+            result.call.return_value = [usdc_out, 0, 0, 150_000]
+            return result
+        uni_contract.functions.quoteExactInputSingle.side_effect = scaled_quote
         mock_w3.eth.contract = MagicMock(return_value=uni_contract)
 
         import onchain_market as ocm

@@ -222,24 +222,26 @@ class OnChainMarket:
                     # Per-unit price impact: how much worse is the 10x quote?
                     impact_pct = abs(mid - large_mid) / mid * D("100")
                     if impact_pct > D("5"):
-                        # >5% price impact at 10 WETH = very thin pool.
-                        # Set liquidity to ~0 so the risk policy rejects it.
-                        estimated_liquidity = D("1000")  # $1K — below min_liquidity_usd
-                        _logger.warning(
-                            "Thin pool: %s on %s — 1 WETH=$%s, 10 WETH=$%s (%.1f%% impact)",
-                            dex.name, chain, float(mid), float(large_mid),  # type: ignore[union-attr]
-                            float(impact_pct),
+                        # >5% price impact at 10 WETH = very thin pool. Reject.
+                        msg = (
+                            f"{dex.name} on {chain}: thin pool — "  # type: ignore[union-attr]
+                            f"1 WETH=${float(mid):.0f}, 10 WETH=${float(large_mid):.0f} "
+                            f"({float(impact_pct):.1f}% impact)"
                         )
+                        _logger.warning("Thin pool: %s", msg)
+                        raise OnChainMarketError(msg)
                     elif impact_pct > D("2"):
                         # 2-5% impact = moderate liquidity
                         estimated_liquidity = mid * D("500") / max(impact_pct, D("1"))
                     else:
                         # <2% impact = deep pool
                         estimated_liquidity = D("10000000")  # $10M+
-            except OnChainMarketError:
+            except OnChainMarketError as thin_err:
+                # Thin pool → reject this DEX, cache for 3h.
+                # Cache it via the normal error path in get_quotes().
                 raise
             except Exception:
-                pass  # Can't estimate — leave at 0, don't block
+                pass  # RPC error on large quote — skip check, don't block
 
             # Model bid-ask spread as symmetric around mid: buy = mid + half, sell = mid - half.
             # The DEX fee tier approximates the full spread (market maker compensation).

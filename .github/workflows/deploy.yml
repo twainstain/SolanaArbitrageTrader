@@ -26,7 +26,8 @@ jobs:
           cache: "pip"
 
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: |
+          pip install web3 requests python-dotenv fastapi "uvicorn[standard]" psycopg2-binary pytest
 
       - name: Run tests
         run: PYTHONPATH=src pytest tests/ -q

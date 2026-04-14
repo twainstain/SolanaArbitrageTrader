@@ -31,7 +31,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install web3 requests python-dotenv fastapi "uvicorn[standard]" psycopg2-binary pytest
+          pip install web3 requests python-dotenv fastapi "uvicorn[standard]" psycopg2-binary pytest httpx
 
       - name: Run tests
         run: PYTHONPATH=src pytest tests/ -q

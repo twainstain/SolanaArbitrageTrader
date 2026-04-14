@@ -204,8 +204,11 @@ class OnChainMarket:
         self._tvl_cache: dict[str, tuple[Decimal, float]] = {}
         self._TVL_CACHE_TTL = 300.0  # 5 minutes
         # Persistent thread pool for RPC calls — avoids creating/destroying
-        # threads every scan cycle.  Sized to the number of DEX+pair combos.
-        self._pool = ThreadPoolExecutor(max_workers=max(len(config.dexes) * 2, 8))
+        # threads every scan cycle.  Sized generously so all DEX+pair combos
+        # can run in parallel (the original code created a pool per scan with
+        # max_workers=len(active_requests)).
+        n_pairs = 1 + len(config.extra_pairs or [])
+        self._pool = ThreadPoolExecutor(max_workers=max(len(config.dexes) * n_pairs, 32))
 
         for dex in config.dexes:
             chain = dex.chain

@@ -61,6 +61,14 @@ class TokenAddresses:
     usdt: str | None = None
     wbtc: str | None = None
     wbnb: str | None = None  # BSC native wrapped token
+    arb: str | None = None
+    op: str | None = None
+    link: str | None = None
+    dai: str | None = None
+    uni: str | None = None
+    aave: str | None = None
+    crv: str | None = None
+    gmx: str | None = None
 
 
 # Canonical contract addresses per chain.
@@ -70,16 +78,27 @@ CHAIN_TOKENS: dict[str, TokenAddresses] = {
         usdc="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
         usdt="0xdAC17F958D2ee523a2206206994597C13D831ec7",
         wbtc="0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+        link="0x514910771AF9Ca656af840dff83E8264EcF986CA",
+        dai="0x6B175474E89094C44Da98b954EedeAC495271d0F",
+        uni="0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984",
+        aave="0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9",
+        crv="0xD533a949740bb3306d119CC777fa900bA034cd52",
     ),
     "base": TokenAddresses(
         weth="0x4200000000000000000000000000000000000006",
         usdc="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        dai="0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb",
     ),
     "arbitrum": TokenAddresses(
         weth="0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
         usdc="0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
         usdt="0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9",
         wbtc="0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0f",
+        arb="0x912CE59144191C1204E64559FE8253a0e49E6548",
+        link="0xf97f4df75117a78c1A5a0DBb814Af92458539FB4",
+        gmx="0xfc5A1A6EB076a2C7aD06eD22C90d7E710E35ad0a",
+        dai="0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1",
+        uni="0xFa7F8980b0f1E64A2062791cc3b0871572f1F7f0",
     ),
     # BSC (BNB Chain) — PancakeSwap's primary chain.
     # Primary pairs are WBNB/USDT, not WETH/USDC.
@@ -103,6 +122,9 @@ CHAIN_TOKENS: dict[str, TokenAddresses] = {
         usdc="0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
         usdt="0x94b008aA00579c1307B0EF2c499aD98a8ce58e58",
         wbtc="0x68f180fcCe6836688e9084f035309E29Bf0A2095",
+        op="0x4200000000000000000000000000000000000042",
+        link="0x350a791Bfc2C21F9Ed5d10980Dad2e2638ffa7f6",
+        dai="0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1",
     ),
     "avax": TokenAddresses(
         weth="0x49D5c2BdFfac6CE2BFdB6640F4F80f226bc10bAB",
@@ -142,18 +164,86 @@ SYMBOL_TO_ATTR: dict[str, str] = {
     "USDT": "usdt",
     "WBTC": "wbtc", "BTC": "wbtc",
     "WBNB": "wbnb", "BNB": "wbnb",
+    "ARB": "arb",
+    "OP": "op",
+    "LINK": "link",
+    "DAI": "dai",
+    "UNI": "uni",
+    "AAVE": "aave",
+    "CRV": "crv",
+    "GMX": "gmx",
 }
+
+# ---------------------------------------------------------------------------
+# Dynamic token registry — stores addresses discovered at runtime
+# (e.g. from DexScreener) that aren't in the static CHAIN_TOKENS above.
+# ---------------------------------------------------------------------------
+import logging
+import threading
+
+_logger = logging.getLogger(__name__)
+_dynamic_tokens: dict[str, str] = {}  # key: "chain:SYMBOL" → address
+_dynamic_lock = threading.Lock()
+_unresolved: dict[str, int] = {}  # key: "chain:SYMBOL" → miss count
+
+
+def register_token(chain: str, symbol: str, address: str) -> None:
+    """Register a dynamically discovered token address.
+
+    Called by pair discovery when DexScreener returns an address
+    for a token not in the static registry.
+    """
+    key = f"{chain}:{symbol.upper()}"
+    with _dynamic_lock:
+        if key not in _dynamic_tokens:
+            _dynamic_tokens[key] = address
+            _logger.info("Registered dynamic token: %s = %s", key, address)
 
 
 def resolve_token_address(chain: str, symbol: str) -> str | None:
-    """Resolve an asset symbol to its on-chain address, or None if unknown."""
+    """Resolve an asset symbol to its on-chain address.
+
+    Checks in order:
+    1. Static CHAIN_TOKENS registry (hardcoded, fastest)
+    2. Dynamic registry (discovered at runtime)
+    3. Returns None and logs to unresolved list
+    """
+    sym = symbol.upper()
+
+    # 1. Static registry
     tokens = CHAIN_TOKENS.get(chain)
-    if tokens is None:
-        return None
-    attr = SYMBOL_TO_ATTR.get(symbol.upper())
-    if attr is None:
-        return None
-    return getattr(tokens, attr, None)
+    if tokens is not None:
+        attr = SYMBOL_TO_ATTR.get(sym)
+        if attr is not None:
+            addr = getattr(tokens, attr, None)
+            if addr is not None:
+                return addr
+
+    # 2. Dynamic registry
+    key = f"{chain}:{sym}"
+    with _dynamic_lock:
+        addr = _dynamic_tokens.get(key)
+        if addr is not None:
+            return addr
+
+        # 3. Track unresolved for debugging
+        _unresolved[key] = _unresolved.get(key, 0) + 1
+        if _unresolved[key] <= 3:  # log first 3 misses
+            _logger.warning("Unresolved token: %s on %s (miss #%d)",
+                          sym, chain, _unresolved[key])
+    return None
+
+
+def get_unresolved_tokens() -> dict:
+    """Return tokens that were requested but couldn't be resolved."""
+    with _dynamic_lock:
+        return dict(_unresolved)
+
+
+def get_dynamic_tokens() -> dict:
+    """Return all dynamically registered tokens."""
+    with _dynamic_lock:
+        return dict(_dynamic_tokens)
 
 
 def token_decimals(symbol: str) -> int:

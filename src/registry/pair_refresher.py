@@ -18,6 +18,7 @@ import time
 from dataclasses import dataclass
 
 from registry.discovery import DiscoveredPair, discover_best_pairs
+from tokens import register_token
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +117,13 @@ class PairRefresher:
                 min_dex_count=self.min_dex_count,
                 max_results=self.max_results,
             )
+            # Register discovered token addresses in the dynamic registry
+            for p in pairs:
+                if p.base_address and p.base_symbol:
+                    register_token(p.chain, p.base_symbol, p.base_address)
+                if p.quote_address and p.quote_symbol:
+                    register_token(p.chain, p.quote_symbol, p.quote_address)
+
             with self._lock:
                 self._pairs = pairs
                 self._last_refresh = time.monotonic()

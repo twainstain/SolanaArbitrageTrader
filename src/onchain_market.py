@@ -24,9 +24,11 @@ from config import BotConfig
 import logging
 
 from contracts import (
+    AERODROME_ROUTER,
     BALANCER_POOL_IDS,
     BALANCER_VAULT,
     BALANCER_VAULT_ABI,
+    CAMELOT_QUOTER,
     PANCAKE_V3_QUOTER,
     PANCAKE_V3_QUOTER_ABI,
     PUBLIC_RPC_URLS,
@@ -38,6 +40,9 @@ from contracts import (
     UNISWAP_V3_QUOTER_ABI,
     UNISWAP_V3_QUOTER_PER_CHAIN,
     UNISWAP_V3_QUOTER_V2,
+    VELO_FACTORY,
+    VELO_ROUTER_ABI,
+    VELODROME_ROUTER,
 )
 
 _logger = logging.getLogger(__name__)
@@ -58,7 +63,10 @@ from tokens import CHAIN_TOKENS
 D = Decimal
 TWO = D("2")
 
-SUPPORTED_DEX_TYPES = ("uniswap_v3", "sushi_v3", "pancakeswap_v3", "balancer_v2", "quickswap_v3")
+SUPPORTED_DEX_TYPES = (
+    "uniswap_v3", "sushi_v3", "pancakeswap_v3", "balancer_v2", "quickswap_v3",
+    "camelot_v3", "velodrome_v2", "aerodrome",
+)
 
 # Token decimals used when converting raw uint256 amounts.
 WETH_DECIMALS = 18
@@ -195,6 +203,10 @@ class OnChainMarket:
                     return self._quote_balancer_v2(chain, base_addr, quote_addr)
                 elif dex_type == "quickswap_v3":
                     return self._quote_quickswap_v3(chain, base_addr, quote_addr)
+                elif dex_type == "camelot_v3":
+                    return self._quote_camelot_v3(chain, base_addr, quote_addr)
+                elif dex_type in ("velodrome_v2", "aerodrome"):
+                    return self._quote_velodrome(chain, base_addr, quote_addr, dex_type)
                 raise OnChainMarketError(f"Unknown dex_type: {dex_type}")
 
             # Try once, on RPC failure rotate to next endpoint and retry once.
@@ -404,6 +416,36 @@ class OnChainMarket:
                     )).call()
                     if result[0] > best_out:
                         best_out = result[0]
+                except Exception:
+                    continue
+            amount_out = best_out
+        elif dex_type == "camelot_v3":
+            qaddr = CAMELOT_QUOTER.get(chain)
+            if not qaddr:
+                return D("0")
+            quoter = w3.eth.contract(
+                address=Web3.to_checksum_address(qaddr), abi=QUICKSWAP_QUOTER_ABI,
+            )
+            result = quoter.functions.quoteExactInputSingle(
+                Web3.to_checksum_address(base), Web3.to_checksum_address(quote),
+                LARGE_AMOUNT, 0,
+            ).call()
+            amount_out = result[0]
+        elif dex_type in ("velodrome_v2", "aerodrome"):
+            router_addr = (AERODROME_ROUTER if dex_type == "aerodrome" else VELODROME_ROUTER).get(chain)
+            factory = VELO_FACTORY.get(chain)
+            if not router_addr or not factory:
+                return D("0")
+            router = w3.eth.contract(
+                address=Web3.to_checksum_address(router_addr), abi=VELO_ROUTER_ABI,
+            )
+            best_out = 0
+            for stable in [False, True]:
+                try:
+                    route = (Web3.to_checksum_address(base), Web3.to_checksum_address(quote), stable, Web3.to_checksum_address(factory))
+                    amounts = router.functions.getAmountsOut(LARGE_AMOUNT, [route]).call()
+                    if len(amounts) >= 2 and amounts[-1] > best_out:
+                        best_out = amounts[-1]
                 except Exception:
                     continue
             amount_out = best_out
@@ -650,3 +692,89 @@ class OnChainMarket:
                 f"QuickSwap returned zero on {chain}."
             )
         return D(amount_out) / D(10 ** USDC_DECIMALS)
+
+    def _quote_camelot_v3(
+        self, chain: str, weth: str, usdc: str
+    ) -> Decimal:
+        """Get mid-price from Camelot V3 (Algebra) Quoter on Arbitrum.
+
+        Same interface as QuickSwap — Algebra protocol, no fee parameter.
+        """
+        quoter_addr = CAMELOT_QUOTER.get(chain)
+        if quoter_addr is None:
+            raise OnChainMarketError(
+                f"No Camelot quoter address for chain '{chain}'."
+            )
+
+        w3 = self._w3[chain]
+        quoter = w3.eth.contract(
+            address=Web3.to_checksum_address(quoter_addr),
+            abi=QUICKSWAP_QUOTER_ABI,  # Same Algebra interface
+        )
+        amount_in = 10 ** WETH_DECIMALS
+
+        result = quoter.functions.quoteExactInputSingle(
+            Web3.to_checksum_address(weth),
+            Web3.to_checksum_address(usdc),
+            amount_in,
+            0,
+        ).call()
+
+        amount_out = result[0]
+        if amount_out == 0:
+            raise OnChainMarketError(
+                f"Camelot returned zero on {chain}."
+            )
+        return D(amount_out) / D(10 ** USDC_DECIMALS)
+
+    def _quote_velodrome(
+        self, chain: str, weth: str, usdc: str, dex_type: str
+    ) -> Decimal:
+        """Get mid-price from Velodrome V2 (Optimism) or Aerodrome (Base).
+
+        Uses getAmountsOut with a Route struct. Tries both volatile and stable
+        pool types, returns the best quote.
+        """
+        if dex_type == "aerodrome":
+            router_addr = AERODROME_ROUTER.get(chain)
+        else:
+            router_addr = VELODROME_ROUTER.get(chain)
+        if router_addr is None:
+            raise OnChainMarketError(
+                f"No {'Aerodrome' if dex_type == 'aerodrome' else 'Velodrome'} "
+                f"router for chain '{chain}'."
+            )
+
+        factory = VELO_FACTORY.get(chain)
+        if factory is None:
+            raise OnChainMarketError(f"No Velo factory for chain '{chain}'.")
+
+        w3 = self._w3[chain]
+        router = w3.eth.contract(
+            address=Web3.to_checksum_address(router_addr),
+            abi=VELO_ROUTER_ABI,
+        )
+        amount_in = 10 ** WETH_DECIMALS
+
+        best_out = 0
+        # Try both volatile (False) and stable (True) pool types.
+        for stable in [False, True]:
+            try:
+                route = (
+                    Web3.to_checksum_address(weth),
+                    Web3.to_checksum_address(usdc),
+                    stable,
+                    Web3.to_checksum_address(factory),
+                )
+                amounts = router.functions.getAmountsOut(amount_in, [route]).call()
+                if len(amounts) >= 2 and amounts[-1] > best_out:
+                    best_out = amounts[-1]
+            except Exception:
+                continue
+
+        if best_out == 0:
+            raise OnChainMarketError(
+                f"{'Aerodrome' if dex_type == 'aerodrome' else 'Velodrome'} "
+                f"returned zero on {chain}."
+            )
+        return D(best_out) / D(10 ** USDC_DECIMALS)

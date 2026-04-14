@@ -43,6 +43,11 @@
 
     {"name": "Uniswap-Optimism",   "base_price": 0, "fee_bps": 5.0,  "volatility_bps": 0, "chain": "optimism", "dex_type": "uniswap_v3"},
     {"name": "Sushi-Optimism",     "base_price": 0, "fee_bps": 30.0, "volatility_bps": 0, "chain": "optimism", "dex_type": "sushi_v3"},
+    {"name": "Velodrome-Optimism", "base_price": 0, "fee_bps": 20.0, "volatility_bps": 0, "chain": "optimism", "dex_type": "velodrome_v2"},
+
+    {"name": "Uniswap-Arbitrum-Camelot", "base_price": 0, "fee_bps": 20.0, "volatility_bps": 0, "chain": "arbitrum", "dex_type": "camelot_v3"},
+
+    {"name": "Aerodrome-Base",     "base_price": 0, "fee_bps": 20.0, "volatility_bps": 0, "chain": "base",     "dex_type": "aerodrome"},
 
     {"name": "Uniswap-BSC",        "base_price": 0, "fee_bps": 5.0,  "volatility_bps": 0, "chain": "bsc",      "dex_type": "uniswap_v3"},
     {"name": "Pancake-BSC",        "base_price": 0, "fee_bps": 25.0, "volatility_bps": 0, "chain": "bsc",      "dex_type": "pancakeswap_v3"},

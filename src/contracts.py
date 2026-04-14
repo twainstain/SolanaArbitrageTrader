@@ -191,6 +191,51 @@ QUICKSWAP_QUOTER: dict[str, str] = {
     "polygon": "0xa15F0D7377B2A0C0c10db057f641beD21028FC89",
 }
 
+# Camelot V3 (Arbitrum) — Algebra protocol, same interface as QuickSwap.
+CAMELOT_QUOTER: dict[str, str] = {
+    "arbitrum": "0x0Fc73040b26E9bC8514fA028D998E73A254Fa76E",
+}
+
+# Velodrome V2 (Optimism) + Aerodrome (Base) — Solidly-fork routers.
+VELODROME_ROUTER: dict[str, str] = {
+    "optimism": "0xa062aE8A9c5e11aaA026fc2670B0D65cCc8B2858",
+}
+AERODROME_ROUTER: dict[str, str] = {
+    "base": "0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43",
+}
+
+# Velodrome/Aerodrome use getAmountsOut with a Route struct.
+# Route: (address from, address to, bool stable, address factory)
+VELO_ROUTER_ABI = [
+    {
+        "inputs": [
+            {"name": "amountIn", "type": "uint256"},
+            {
+                "name": "routes",
+                "type": "tuple[]",
+                "components": [
+                    {"name": "from", "type": "address"},
+                    {"name": "to", "type": "address"},
+                    {"name": "stable", "type": "bool"},
+                    {"name": "factory", "type": "address"},
+                ],
+            },
+        ],
+        "name": "getAmountsOut",
+        "outputs": [
+            {"name": "amounts", "type": "uint256[]"},
+        ],
+        "stateMutability": "view",
+        "type": "function",
+    }
+]
+
+# Default pool factories for route construction.
+VELO_FACTORY: dict[str, str] = {
+    "optimism": "0x420DD381b31aEf6683db6B902084cB0FFECe40Da",  # Velodrome V2
+    "base": "0x420DD381b31aEf6683db6B902084cB0FFECe40Da",      # Aerodrome
+}
+
 QUICKSWAP_QUOTER_ABI = [
     {
         "inputs": [

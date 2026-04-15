@@ -21,7 +21,11 @@ from persistence.repository import Repository
 logger = logging.getLogger(__name__)
 
 D = Decimal
-BIG_WIN_THRESHOLD_PCT = D("5")
+# Alert threshold for immediate Telegram + Discord notification.
+# Any opportunity with spread >= this triggers a real-time alert.
+# Set to 0.3% to catch all actionable spreads (was 5% — too high,
+# missed most real opportunities which are typically 0.2-1%).
+BIG_WIN_THRESHOLD_PCT = D("0.3")
 
 # Intervals in seconds.
 HOURLY_INTERVAL = 3600.0

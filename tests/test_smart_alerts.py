@@ -64,7 +64,7 @@ class BigWinTelegramTests(_AlertTestBase):
         alerter = SmartAlerter(repo=self.repo, telegram=tg, discord=_SAFE_DC, gmail=_SAFE_GM)
 
         alerter.check_opportunity(
-            spread_pct=D("1.5"), pair="WETH/USDC",
+            spread_pct=D("0.2"), pair="WETH/USDC",
             buy_dex="A", sell_dex="B", chain="ethereum", net_profit=0.005,
         )
         mock_post.assert_not_called()
@@ -103,7 +103,7 @@ class BigWinDiscordTests(_AlertTestBase):
         alerter = SmartAlerter(repo=self.repo, telegram=_SAFE_TG, discord=dc, gmail=_SAFE_GM)
 
         alerter.check_opportunity(
-            spread_pct=D("1.5"), pair="WETH/USDC",
+            spread_pct=D("0.2"), pair="WETH/USDC",
             buy_dex="A", sell_dex="B", chain="ethereum", net_profit=0.005,
         )
         mock_post.assert_not_called()
@@ -394,8 +394,8 @@ class PerChainStatsTests(_AlertTestBase):
 
 
 class ThresholdTests(unittest.TestCase):
-    def test_big_win_threshold_is_5_percent(self):
-        self.assertEqual(BIG_WIN_THRESHOLD_PCT, D("5"))
+    def test_big_win_threshold_is_0_3_percent(self):
+        self.assertEqual(BIG_WIN_THRESHOLD_PCT, D("0.3"))
 
 
 if __name__ == "__main__":

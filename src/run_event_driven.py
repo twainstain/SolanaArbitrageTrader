@@ -597,7 +597,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--poll-interval", type=float, default=8.0,
                         help="Seconds between scans (default: 8)")
-    parser.add_argument("--queue-size", type=int, default=100)
+    parser.add_argument("--queue-size", type=int, default=333)
     args = parser.parse_args()
 
     config = BotConfig.from_file(args.config)

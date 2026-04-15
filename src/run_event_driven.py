@@ -43,7 +43,7 @@ from execution.bot import ArbitrageBot
 from core.config import BotConfig, PairConfig
 from core.env import get_rpc_overrides, load_env
 from observability.log import get_logger, setup_logging
-from core.models import ZERO, Opportunity
+from core.models import ZERO, Opportunity, OpportunityStatus as Status
 from observability.metrics import MetricsCollector
 from market.onchain_market import OnChainMarket
 from persistence.db import init_db
@@ -356,24 +356,24 @@ class PipelineConsumer:
             )
 
             # Update metrics based on result.
-            if result.final_status == "rejected":
+            if result.final_status == Status.REJECTED:
                 self.metrics.record_opportunity_rejected(result.reason)
-            elif result.final_status in ("included", "dry_run"):
+            elif result.final_status in (Status.INCLUDED, Status.DRY_RUN):
                 self.metrics.record_expected_profit(float(opp.net_profit_base))
-                if result.final_status == "included":
+                if result.final_status == Status.INCLUDED:
                     self.metrics.record_execution_submitted()
                     self.metrics.record_execution_result(
                         included=True, reverted=False,
                         actual_profit=float(result.net_profit),
                     )
                     self.breaker.record_execution_success()
-            elif result.final_status == "submitted":
+            elif result.final_status == Status.SUBMITTED:
                 self.metrics.record_execution_submitted()
-            elif result.final_status == "reverted":
+            elif result.final_status == Status.REVERTED:
                 self.metrics.record_execution_submitted()
                 self.breaker.record_revert()
                 self.metrics.record_execution_result(included=True, reverted=True)
-            elif result.final_status == "not_included":
+            elif result.final_status == Status.NOT_INCLUDED:
                 self.metrics.record_execution_submitted()
                 self.metrics.record_execution_result(included=False, reverted=False)
 

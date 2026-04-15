@@ -7,7 +7,9 @@ import os
 
 logger = logging.getLogger(__name__)
 
-CHAINS = ["arbitrum", "ethereum", "base", "optimism"]
+from core.models import SUPPORTED_CHAINS
+
+CHAINS = SUPPORTED_CHAINS
 
 
 def get_wallet_balances() -> dict:

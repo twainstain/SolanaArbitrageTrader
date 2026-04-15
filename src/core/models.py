@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 from decimal import Decimal
+from enum import Enum
 
 # Convenience alias for constructing Decimal literals.
 D = Decimal
@@ -24,6 +25,39 @@ D = Decimal
 ZERO = D("0")
 ONE = D("1")
 BPS_DIVISOR = D("10000")
+
+
+class OpportunityStatus(str, Enum):
+    """Pipeline status values for an opportunity.
+
+    Using str enum so values are directly usable as DB strings and JSON
+    without .value — e.g., OpportunityStatus.APPROVED == "approved".
+
+    Status progression:
+      detected → priced → approved/rejected/simulation_approved
+        → simulated/simulation_failed → submitted → included/reverted/not_included
+      Or: detected → priced → approved → dry_run (no submitter wired)
+    """
+    DETECTED = "detected"
+    PRICED = "priced"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    SIMULATION_APPROVED = "simulation_approved"
+    SIMULATED = "simulated"
+    SIMULATION_FAILED = "simulation_failed"
+    SUBMITTED = "submitted"
+    INCLUDED = "included"
+    REVERTED = "reverted"
+    NOT_INCLUDED = "not_included"
+    DRY_RUN = "dry_run"
+
+
+# Chains the bot supports for scanning and execution.
+# Single source of truth — used by wallet, API, discovery, and config.
+SUPPORTED_CHAINS: tuple[str, ...] = (
+    "ethereum", "arbitrum", "base", "optimism",
+    "polygon", "bsc", "avalanche",
+)
 
 # Fields that should remain as-is (not coerced to Decimal).
 #

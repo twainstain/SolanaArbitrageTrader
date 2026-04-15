@@ -182,7 +182,8 @@ def create_app(
     @app.get("/execution")
     def get_execution_status():
         from execution.chain_executor import SWAP_ROUTERS, AAVE_V3_POOL
-        known_chains = ["arbitrum", "optimism", "ethereum", "base"]
+        from core.models import SUPPORTED_CHAINS
+        known_chains = SUPPORTED_CHAINS
         chain_status = {}
         for ch in known_chains:
             mode = _risk_policy.get_chain_mode(ch)

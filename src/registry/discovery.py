@@ -39,11 +39,8 @@ logger = logging.getLogger(__name__)
 
 DEXSCREENER_API = "https://api.dexscreener.com"
 
-# Top EVM chains we support for on-chain scanning.
-SUPPORTED_CHAINS = {
-    "ethereum", "arbitrum", "base", "bsc",
-    "polygon", "optimism", "avalanche",
-}
+# Import from single source of truth.
+from core.models import SUPPORTED_CHAINS
 
 # Minimum thresholds for a pair to be interesting.
 MIN_VOLUME_24H = 100_000     # $100K daily volume

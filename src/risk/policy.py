@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import NamedTuple
 
-from core.models import ZERO, Opportunity
+from core.models import ZERO, Opportunity, OpportunityStatus as Status
 
 D = Decimal
 
@@ -225,7 +225,7 @@ class RiskPolicy:
                 "if live mode were enabled (POST /execution {enabled: true})."
             )
             analysis["simulation"] = True
-            return RiskVerdict(False, "simulation_approved", analysis)
+            return RiskVerdict(False, Status.SIMULATION_APPROVED, analysis)
 
         analysis["reason_detail"] = "All risk checks passed."
         return RiskVerdict(True, "approved", analysis)

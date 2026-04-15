@@ -44,7 +44,7 @@ from decimal import Decimal
 from typing import Protocol
 
 from alerting.dispatcher import AlertDispatcher
-from core.models import ZERO, MarketQuote, Opportunity
+from core.models import ZERO, MarketQuote, Opportunity, OpportunityStatus as Status
 from persistence.repository import Repository
 from pipeline.verifier import VerificationResult
 from risk.policy import RiskPolicy, RiskVerdict
@@ -207,7 +207,7 @@ class CandidatePipeline:
         # without re-running the risk policy.
         _t2 = _time.monotonic()
         hour_trades = self.repo.count_opportunities_since(
-            _one_hour_ago(), status="submitted"
+            _one_hour_ago(), status=Status.SUBMITTED
         )
         verdict = self.risk_policy.evaluate(
             opportunity,
@@ -224,7 +224,7 @@ class CandidatePipeline:
 
         if not verdict.approved:
             # Distinguish "simulation_approved" (would trade) from actual rejections.
-            if verdict.reason == "simulation_approved":
+            if verdict.reason == Status.SIMULATION_APPROVED:
                 status = "simulation_approved"
                 self.repo.update_opportunity_status(opp_id, status)
                 _timings["total_ms"] = (_time.monotonic() - _t0) * 1000
@@ -232,16 +232,16 @@ class CandidatePipeline:
                             opp_id, float(opportunity.gross_spread_pct),
                             float(opportunity.net_profit_base),
                             {k: f"{v:.1f}" for k, v in _timings.items()})
-                return PipelineResult(opp_id, "simulation_approved", verdict.reason,
+                return PipelineResult(opp_id, Status.SIMULATION_APPROVED, verdict.reason,
                                       opportunity.net_profit_base, timings=_timings)
             else:
-                self.repo.update_opportunity_status(opp_id, "rejected")
+                self.repo.update_opportunity_status(opp_id, Status.REJECTED)
                 _timings["total_ms"] = (_time.monotonic() - _t0) * 1000
                 logger.info("[pipeline] %s rejected: %s (timings: %s)", opp_id, verdict.reason,
                             {k: f"{v:.1f}" for k, v in _timings.items()})
-                return PipelineResult(opp_id, "rejected", verdict.reason, timings=_timings)
+                return PipelineResult(opp_id, Status.REJECTED, verdict.reason, timings=_timings)
 
-        self.repo.update_opportunity_status(opp_id, "approved")
+        self.repo.update_opportunity_status(opp_id, Status.APPROVED)
         logger.info("[pipeline] %s approved", opp_id)
 
         # --- Stage 4: Simulation ---
@@ -265,7 +265,7 @@ class CandidatePipeline:
             )
 
             if not sim_ok:
-                self.repo.update_opportunity_status(opp_id, "simulation_failed")
+                self.repo.update_opportunity_status(opp_id, Status.SIMULATION_FAILED)
                 logger.info("[pipeline] %s simulation failed: %s", opp_id, sim_reason)
                 self.dispatcher.alert("simulation_failed",
                     f"Simulation failed: {opportunity.pair}\n"
@@ -274,9 +274,9 @@ class CandidatePipeline:
                     {"pair": opportunity.pair, "reason": sim_reason})
                 _timings["simulate_ms"] = (_time.monotonic() - _t3) * 1000
                 _timings["total_ms"] = (_time.monotonic() - _t0) * 1000
-                return PipelineResult(opp_id, "simulation_failed", sim_reason, timings=_timings)
+                return PipelineResult(opp_id, Status.SIMULATION_FAILED, sim_reason, timings=_timings)
 
-            self.repo.update_opportunity_status(opp_id, "simulated")
+            self.repo.update_opportunity_status(opp_id, Status.SIMULATED)
             logger.info("[pipeline] %s simulation passed", opp_id)
 
         _timings["simulate_ms"] = (_time.monotonic() - _t3) * 1000
@@ -306,7 +306,7 @@ class CandidatePipeline:
                 bundle_id=bundle_id,
                 target_block=target_block,
             )
-            self.repo.update_opportunity_status(opp_id, "submitted")
+            self.repo.update_opportunity_status(opp_id, Status.SUBMITTED)
             logger.info("[pipeline] %s submitted: tx=%s block=%d", opp_id, tx_hash, target_block)
 
             # --- Stage 6: Verification ---
@@ -338,40 +338,40 @@ class CandidatePipeline:
                 _timings["total_ms"] = (_time.monotonic() - _t0) * 1000
 
                 if verification.included and not verification.reverted:
-                    self.repo.update_opportunity_status(opp_id, "included")
+                    self.repo.update_opportunity_status(opp_id, Status.INCLUDED)
                     logger.info("[pipeline] %s included: profit=%.6f", opp_id, float(verification.actual_profit_base))
                     self.dispatcher.trade_executed(
                         pair=opportunity.pair, tx_hash=tx_hash,
                         profit=float(verification.actual_profit_base))
-                    return PipelineResult(opp_id, "included", "success", verification.actual_profit_base, timings=_timings)
+                    return PipelineResult(opp_id, Status.INCLUDED, "success", verification.actual_profit_base, timings=_timings)
                 elif verification.reverted:
-                    self.repo.update_opportunity_status(opp_id, "reverted")
+                    self.repo.update_opportunity_status(opp_id, Status.REVERTED)
                     logger.info("[pipeline] %s reverted", opp_id)
                     self.dispatcher.trade_reverted(
                         pair=opportunity.pair, tx_hash=tx_hash,
                         reason="tx_reverted")
-                    return PipelineResult(opp_id, "reverted", "tx_reverted", timings=_timings)
+                    return PipelineResult(opp_id, Status.REVERTED, "tx_reverted", timings=_timings)
                 else:
-                    self.repo.update_opportunity_status(opp_id, "not_included")
+                    self.repo.update_opportunity_status(opp_id, Status.NOT_INCLUDED)
                     logger.info("[pipeline] %s not included", opp_id)
                     self.dispatcher.alert("trade_not_included",
                         f"Trade not included: {opportunity.pair}\nBundle expired",
                         {"pair": opportunity.pair, "tx_hash": tx_hash})
-                    return PipelineResult(opp_id, "not_included", "bundle_expired", timings=_timings)
+                    return PipelineResult(opp_id, Status.NOT_INCLUDED, "bundle_expired", timings=_timings)
 
             _timings["submit_ms"] = (_time.monotonic() - _t4) * 1000
             _timings["total_ms"] = (_time.monotonic() - _t0) * 1000
-            return PipelineResult(opp_id, "submitted", "awaiting_verification", timings=_timings)
+            return PipelineResult(opp_id, Status.SUBMITTED, "awaiting_verification", timings=_timings)
 
         # No submitter wired — the opportunity passed all risk checks and
         # simulation (if available) but there's no execution stack configured.
         # Record as "dry_run" so the dashboard shows it as "would have traded".
         # This is the normal exit path in simulation-only mode.
-        self.repo.update_opportunity_status(opp_id, "dry_run")
+        self.repo.update_opportunity_status(opp_id, Status.DRY_RUN)
         _timings["total_ms"] = (_time.monotonic() - _t0) * 1000
         logger.info("[pipeline] %s dry_run (timings: %s)", opp_id,
                     {k: f"{v:.1f}" for k, v in _timings.items()})
-        return PipelineResult(opp_id, "dry_run", "approved_not_submitted",
+        return PipelineResult(opp_id, Status.DRY_RUN, "approved_not_submitted",
                               opportunity.net_profit_base, timings=_timings)
 
 

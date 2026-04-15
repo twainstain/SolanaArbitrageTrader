@@ -186,7 +186,7 @@ def discover_and_persist_pools(
                 continue
 
             # Ensure pair exists in DB.
-            pair_row = repo.get_pair(pair_cfg.pair)
+            pair_row = repo.get_pair_on_chain(pair_cfg.pair, chain)
             if pair_row is None:
                 from tokens import token_decimals
                 repo.save_pair(
@@ -197,7 +197,7 @@ def discover_and_persist_pools(
                     base_decimals=token_decimals(pair_cfg.base_asset),
                     quote_decimals=token_decimals(pair_cfg.quote_asset),
                 )
-                pair_row = repo.get_pair(pair_cfg.pair)
+                pair_row = repo.get_pair_on_chain(pair_cfg.pair, chain)
             if pair_row is None:
                 continue
             pair_id = pair_row["pair_id"]

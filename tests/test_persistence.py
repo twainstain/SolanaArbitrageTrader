@@ -1,5 +1,6 @@
 """Tests for the persistence layer — DB schema, repository CRUD, candidate lifecycle."""
 
+import sqlite3
 import sys
 import tempfile
 from decimal import Decimal
@@ -363,6 +364,93 @@ class PostgresConfigTests(unittest.TestCase):
         self.assertEqual(conn.backend, "sqlite")
         close_db()
         Path(tmp.name).unlink(missing_ok=True)
+
+    def test_pairs_schema_uses_pair_and_chain_uniqueness(self):
+        from persistence.db import _TABLES_SQLITE
+
+        self.assertIn("UNIQUE (pair, chain)", _TABLES_SQLITE)
+
+
+class PairSchemaMigrationTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        close_db()
+
+    def test_sqlite_migrates_legacy_pairs_table_to_pair_chain_uniqueness(self) -> None:
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        tmp_path = Path(tmp.name)
+        tmp.close()
+
+        legacy = sqlite3.connect(tmp_path)
+        legacy.executescript(
+            """
+            CREATE TABLE pairs (
+                pair_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pair TEXT NOT NULL UNIQUE,
+                chain TEXT NOT NULL,
+                base_token TEXT NOT NULL,
+                quote_token TEXT NOT NULL,
+                base_decimals INTEGER NOT NULL DEFAULT 18,
+                quote_decimals INTEGER NOT NULL DEFAULT 6,
+                risk_class TEXT NOT NULL DEFAULT 'blue_chip',
+                max_trade_size TEXT NOT NULL DEFAULT '10',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE pools (
+                pool_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pair_id INTEGER NOT NULL REFERENCES pairs(pair_id),
+                chain TEXT NOT NULL,
+                dex TEXT NOT NULL,
+                address TEXT NOT NULL,
+                fee_tier_bps TEXT NOT NULL DEFAULT '30',
+                dex_type TEXT NOT NULL DEFAULT 'uniswap_v3',
+                liquidity_class TEXT NOT NULL DEFAULT 'medium',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL
+            );
+            """
+        )
+        legacy.execute(
+            """
+            INSERT INTO pairs (
+                pair, chain, base_token, quote_token, base_decimals,
+                quote_decimals, risk_class, max_trade_size, enabled, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("WETH/USDC", "ethereum", "WETH", "USDC", 18, 6, "blue_chip", "10", 1, "2026-04-15T00:00:00Z"),
+        )
+        legacy.execute(
+            """
+            INSERT INTO pools (
+                pair_id, chain, dex, address, fee_tier_bps,
+                dex_type, liquidity_class, enabled, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (1, "ethereum", "Uniswap", "0xpool", "5", "uniswap_v3", "high", 1, "2026-04-15T00:00:00Z"),
+        )
+        legacy.commit()
+        legacy.close()
+
+        conn = init_db(tmp_path)
+        repo = Repository(conn)
+        arb_id = repo.save_pair("WETH/USDC", "arbitrum", "WETH", "USDC")
+        eth = repo.get_pair_on_chain("WETH/USDC", "ethereum")
+        arb = repo.get_pair_on_chain("WETH/USDC", "arbitrum")
+
+        self.assertIsNotNone(eth)
+        self.assertIsNotNone(arb)
+        self.assertEqual(eth["pair_id"], 1)
+        self.assertEqual(arb["pair_id"], arb_id)
+
+        pools = repo.get_pools_for_pair(1)
+        self.assertEqual(len(pools), 1)
+        self.assertEqual(pools[0]["chain"], "ethereum")
+
+        close_db()
+        tmp_path.unlink(missing_ok=True)
 
 
 class BatchCommitTests(unittest.TestCase):

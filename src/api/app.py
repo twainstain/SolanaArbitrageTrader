@@ -141,28 +141,64 @@ def create_app(
 
     @app.post("/execution")
     def toggle_execution(body: Dict):
-        requested = bool(body.get("enabled", False))
-        if requested:
-            repo = _get_repo()
-            readiness = _load_launch_readiness(repo)
-            if not readiness["launch_ready"]:
-                _risk_policy.execution_enabled = False
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "message": "launch_not_ready",
-                        **readiness,
-                    },
-                )
-        _risk_policy.execution_enabled = requested
+        chain = body.get("chain")  # Optional: per-chain toggle
+        requested = body.get("enabled")
+        mode = body.get("mode")  # "live", "simulated", "disabled"
+
+        if chain:
+            # Per-chain mode change
+            if mode:
+                _risk_policy.set_chain_mode(chain, mode)
+            elif requested is not None:
+                _risk_policy.set_chain_mode(chain, "live" if requested else "simulated")
+            return {
+                "chain": chain,
+                "mode": _risk_policy.get_chain_mode(chain),
+                "chain_execution_mode": dict(_risk_policy.chain_execution_mode),
+            }
+
+        # Global toggle (backward compatible)
+        if mode:
+            _risk_policy.execution_enabled = (mode == "live")
+        elif requested is not None:
+            requested = bool(requested)
+            if requested:
+                repo = _get_repo()
+                readiness = _load_launch_readiness(repo)
+                if not readiness["launch_ready"]:
+                    _risk_policy.execution_enabled = False
+                    raise HTTPException(
+                        status_code=409,
+                        detail={"message": "launch_not_ready", **readiness},
+                    )
+            _risk_policy.execution_enabled = requested
+
         return {
             "execution_enabled": _risk_policy.execution_enabled,
-            "message": "enabled" if _risk_policy.execution_enabled else "disabled",
+            "chain_execution_mode": dict(_risk_policy.chain_execution_mode),
+            "message": "updated",
         }
 
     @app.get("/execution")
     def get_execution_status():
-        return {"execution_enabled": _risk_policy.execution_enabled}
+        from chain_executor import SWAP_ROUTERS, AAVE_V3_POOL
+        known_chains = ["arbitrum", "optimism", "ethereum", "base"]
+        chain_status = {}
+        for ch in known_chains:
+            mode = _risk_policy.get_chain_mode(ch)
+            has_routers = ch in SWAP_ROUTERS
+            has_aave = ch in AAVE_V3_POOL
+            chain_status[ch] = {
+                "mode": mode,
+                "has_routers": has_routers,
+                "has_aave": has_aave,
+                "executable": has_routers and has_aave,
+            }
+        return {
+            "execution_enabled": _risk_policy.execution_enabled,
+            "chain_execution_mode": dict(_risk_policy.chain_execution_mode),
+            "chains": chain_status,
+        }
 
     @app.get("/launch-readiness")
     def get_launch_readiness():
@@ -357,6 +393,25 @@ def create_app(
         repo = _get_repo()
         return repo.get_pnl_summary()
 
+    @app.get("/pnl/analytics")
+    def get_pnl_analytics(
+        chain: Optional[str] = None,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
+        window: Optional[str] = None,
+    ):
+        """Comprehensive PnL analytics with filters."""
+        # Resolve time range from window shortcut or explicit dates.
+        if window and not since:
+            from observability.time_windows import WINDOWS
+            from datetime import datetime, timezone
+            td = WINDOWS.get(window)
+            if td:
+                since = (datetime.now(timezone.utc) - td).isoformat()
+
+        repo = _get_repo()
+        return repo.get_pnl_analytics(chain=chain, since=since, until=until)
+
     @app.get("/funnel")
     def get_funnel():
         repo = _get_repo()
@@ -444,6 +499,14 @@ def create_app(
             headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
         )
 
+    @app.get("/analytics", response_class=HTMLResponse)
+    def analytics_dashboard():
+        from api.dashboard import ANALYTICS_HTML
+        return HTMLResponse(
+            content=ANALYTICS_HTML,
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
+
     @app.get("/dashboard/window/{window_key}")
     def dashboard_window(window_key: str, chain: Optional[str] = None):
         from observability.time_windows import get_windowed_stats
@@ -498,7 +561,7 @@ def create_app(
 
         rpc_overrides = get_rpc_overrides()
         balances = {}
-        for chain in ["arbitrum", "ethereum", "base"]:
+        for chain in ["arbitrum", "ethereum", "base", "optimism"]:
             rpc_url = rpc_overrides.get(chain, PUBLIC_RPC_URLS.get(chain, ""))
             if not rpc_url:
                 continue

@@ -104,7 +104,7 @@ def check_url_chain_match(url: str, expected_chain: str) -> str | None:
     return None  # Can't determine, assume OK.
 
 
-def test_endpoint(chain: str, url: str) -> dict:
+def probe_endpoint(chain: str, url: str) -> dict:
     """Test a single RPC endpoint. Returns result dict."""
     result = {
         "chain": chain,
@@ -177,7 +177,7 @@ def main() -> None:
             continue
 
         print(f"Testing {chain:12s} ({source})...", end=" ", flush=True)
-        r = test_endpoint(chain, url)
+        r = probe_endpoint(chain, url)
         r["source"] = source
         results.append(r)
 

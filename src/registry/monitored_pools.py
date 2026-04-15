@@ -72,9 +72,9 @@ def sync_monitored_pools(repo: Repository) -> int:
                 continue
             base_asset, quote_asset = parts
 
-            pair_row = repo.get_pair(pair_name)
+            pair_row = repo.get_pair_on_chain(pair_name, chain)
             if pair_row is None:
-                pair_id = repo.save_pair(
+                repo.save_pair(
                     pair=pair_name,
                     chain=chain,
                     base_token=base_asset,
@@ -83,7 +83,7 @@ def sync_monitored_pools(repo: Repository) -> int:
                     quote_decimals=token_decimals(quote_asset),
                     max_trade_size=Decimal("10"),
                 )
-                pair_row = repo.get_pair(pair_name)
+                pair_row = repo.get_pair_on_chain(pair_name, chain)
             if pair_row is None:
                 continue
 

@@ -13,3 +13,6 @@ logs/*.jsonl
 tmp_*.html
 .claude/
 docs/autoresearch_original/
+contracts/out/
+contracts/cache/
+contracts/broadcast/

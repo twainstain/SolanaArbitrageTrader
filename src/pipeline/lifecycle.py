@@ -32,8 +32,8 @@ class Simulator(Protocol):
 
 class Submitter(Protocol):
     """Protocol for transaction submission."""
-    def submit(self, opportunity: Opportunity) -> tuple[str, str, int]:
-        """Returns (tx_hash, bundle_id, target_block)."""
+    def submit(self, opportunity: Opportunity) -> tuple[str, str, int] | tuple[str, str, int, str]:
+        """Returns (tx_hash, bundle_id, target_block[, submission_type])."""
         ...
 
 
@@ -209,10 +209,15 @@ class CandidatePipeline:
         # --- Stage 5: Submission ---
         _t4 = _time.monotonic()
         if self.submitter is not None:
-            tx_hash, bundle_id, target_block = self.submitter.submit(opportunity)
+            submission = self.submitter.submit(opportunity)
+            if len(submission) == 4:
+                tx_hash, bundle_id, target_block, submission_type = submission
+            else:
+                tx_hash, bundle_id, target_block = submission
+                submission_type = "flashbots"
             exec_id = self.repo.save_execution_attempt(
                 opp_id=opp_id,
-                submission_type="flashbots",
+                submission_type=submission_type,
                 tx_hash=tx_hash,
                 bundle_id=bundle_id,
                 target_block=target_block,

@@ -263,6 +263,93 @@ class PerChainSpreadTests(unittest.TestCase):
         self.assertIn("chain_min_spread", verdict.details)
 
 
+class PerChainExecutionModeTests(unittest.TestCase):
+    """Tests for per-chain execution mode (live/simulated/disabled)."""
+
+    def test_chain_live_global_simulated(self) -> None:
+        """Chain set to live should execute even when global is simulated."""
+        policy = RiskPolicy(execution_enabled=False)
+        policy.set_chain_mode("ethereum", "live")
+        opp = _make_opp(chain="ethereum")
+        verdict = policy.evaluate(opp)
+        self.assertTrue(verdict.approved)
+        self.assertEqual(verdict.reason, "approved")
+
+    def test_chain_simulated_global_live(self) -> None:
+        """Chain set to simulated should simulate even when global is live."""
+        policy = RiskPolicy(execution_enabled=True)
+        policy.set_chain_mode("arbitrum", "simulated")
+        opp = _make_opp(chain="arbitrum")
+        verdict = policy.evaluate(opp)
+        self.assertFalse(verdict.approved)
+        self.assertEqual(verdict.reason, "simulation_approved")
+
+    def test_chain_disabled_rejects(self) -> None:
+        """Chain set to disabled should reject immediately."""
+        policy = RiskPolicy(execution_enabled=True)
+        policy.set_chain_mode("base", "disabled")
+        opp = _make_opp(chain="base")
+        verdict = policy.evaluate(opp)
+        self.assertFalse(verdict.approved)
+        self.assertEqual(verdict.reason, "chain_disabled")
+
+    def test_unknown_chain_uses_global(self) -> None:
+        """Chain not in chain_execution_mode falls back to global."""
+        policy = RiskPolicy(execution_enabled=True)
+        opp = _make_opp(chain="polygon")
+        verdict = policy.evaluate(opp)
+        self.assertTrue(verdict.approved)
+
+    def test_unknown_chain_global_simulated(self) -> None:
+        policy = RiskPolicy(execution_enabled=False)
+        opp = _make_opp(chain="polygon")
+        verdict = policy.evaluate(opp)
+        self.assertEqual(verdict.reason, "simulation_approved")
+
+    def test_mixed_chains(self) -> None:
+        """Arbitrum live, Optimism simulated, Base disabled."""
+        policy = RiskPolicy(execution_enabled=False)
+        policy.set_chain_mode("arbitrum", "live")
+        policy.set_chain_mode("optimism", "simulated")
+        policy.set_chain_mode("base", "disabled")
+
+        v_arb = policy.evaluate(_make_opp(chain="arbitrum"))
+        self.assertTrue(v_arb.approved)
+
+        v_opt = policy.evaluate(_make_opp(chain="optimism"))
+        self.assertFalse(v_opt.approved)
+        self.assertEqual(v_opt.reason, "simulation_approved")
+
+        v_base = policy.evaluate(_make_opp(chain="base"))
+        self.assertFalse(v_base.approved)
+        self.assertEqual(v_base.reason, "chain_disabled")
+
+    def test_get_chain_mode_explicit(self) -> None:
+        policy = RiskPolicy()
+        policy.set_chain_mode("arbitrum", "live")
+        self.assertEqual(policy.get_chain_mode("arbitrum"), "live")
+
+    def test_get_chain_mode_fallback(self) -> None:
+        policy = RiskPolicy(execution_enabled=False)
+        self.assertEqual(policy.get_chain_mode("arbitrum"), "simulated")
+        policy.execution_enabled = True
+        self.assertEqual(policy.get_chain_mode("arbitrum"), "live")
+
+    def test_set_invalid_mode_raises(self) -> None:
+        policy = RiskPolicy()
+        with self.assertRaises(ValueError):
+            policy.set_chain_mode("arbitrum", "invalid")
+
+    def test_disabled_chain_skips_other_rules(self) -> None:
+        """Disabled chain should reject without evaluating profit/spread rules."""
+        policy = RiskPolicy(execution_enabled=True, min_net_profit=D("100"))
+        policy.set_chain_mode("base", "disabled")
+        # This opp would fail min_profit, but disabled should come first
+        opp = _make_opp(chain="base", net_profit_base=D("0.001"))
+        verdict = policy.evaluate(opp)
+        self.assertEqual(verdict.reason, "chain_disabled")
+
+
 class ToDictTests(unittest.TestCase):
     def test_serializes_all_fields(self) -> None:
         policy = RiskPolicy()
@@ -272,10 +359,17 @@ class ToDictTests(unittest.TestCase):
         self.assertIn("chain_min_spread_pct", d)
         self.assertIn("execution_enabled", d)
         self.assertIn("max_trades_per_hour", d)
+        self.assertIn("chain_execution_mode", d)
         self.assertEqual(d["execution_enabled"], False)
         # Chain overrides should be serialized
         self.assertIn("ethereum", d["chain_min_spread_pct"])
         self.assertIn("arbitrum", d["chain_min_spread_pct"])
+
+    def test_chain_execution_mode_in_dict(self) -> None:
+        policy = RiskPolicy()
+        policy.set_chain_mode("arbitrum", "live")
+        d = policy.to_dict()
+        self.assertEqual(d["chain_execution_mode"]["arbitrum"], "live")
 
 
 if __name__ == "__main__":

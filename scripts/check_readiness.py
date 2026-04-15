@@ -53,7 +53,7 @@ def check_from_config(config_path: str) -> None:
     # Executable vs detection-only DEXes.
     executable_dexes = []
     detection_only = []
-    unsupported_types = {"velodrome_v2", "aerodrome", "curve", "traderjoe_lb"}
+    unsupported_types = {"curve", "traderjoe_lb"}
     for dex in config.dexes:
         if dex.dex_type in unsupported_types:
             detection_only.append(f"{dex.name} ({dex.dex_type})")
@@ -149,7 +149,7 @@ def check_from_api(api_url: str) -> None:
     import requests
 
     user = os.environ.get("DASHBOARD_USER", "admin")
-    password = os.environ.get("DASHBOARD_PASS", "test")
+    password = os.environ.get("DASHBOARD_PASS", "adminTest")
 
     try:
         r = requests.get(f"{api_url}/launch-readiness", auth=(user, password), timeout=5)

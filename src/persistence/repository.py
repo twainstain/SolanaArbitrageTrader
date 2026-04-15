@@ -379,6 +379,144 @@ class Repository:
             row = self.conn.execute(_SQL).fetchone()
         return dict(row) if row else {}
 
+    def get_pnl_analytics(
+        self,
+        chain: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> dict:
+        """Comprehensive PnL analytics for profit improvement.
+
+        Supports filters: chain, since (ISO datetime), until (ISO datetime).
+        """
+        # Build WHERE clause fragments for reuse.
+        conditions: list[str] = []
+        params: list[str] = []
+        if chain:
+            conditions.append("o.chain = ?")
+            params.append(chain)
+        if since:
+            conditions.append("o.detected_at >= ?")
+            params.append(since)
+        if until:
+            conditions.append("o.detected_at <= ?")
+            params.append(until)
+        where = (" AND " + " AND ".join(conditions)) if conditions else ""
+        base_join = (
+            "FROM trade_results tr "
+            "JOIN execution_attempts ea ON tr.execution_id = ea.execution_id "
+            "JOIN opportunities o ON ea.opportunity_id = o.opportunity_id"
+        )
+        tp = tuple(params)
+
+        # 1. Per-pair breakdown
+        per_pair = self.conn.execute(f"""
+            SELECT o.pair, o.chain,
+                COUNT(*) as trades,
+                SUM(CASE WHEN tr.included = 1 AND tr.reverted = 0 THEN 1 ELSE 0 END) as wins,
+                SUM(CASE WHEN tr.reverted = 1 THEN 1 ELSE 0 END) as reverts,
+                COALESCE(SUM(CAST(tr.actual_net_profit AS REAL)), 0) as net_profit,
+                COALESCE(SUM(CAST(tr.gas_cost_base AS REAL)), 0) as gas_cost,
+                COALESCE(SUM(CAST(tr.realized_profit_quote AS REAL)), 0) as realized_quote,
+                COALESCE(AVG(CAST(tr.actual_net_profit AS REAL)), 0) as avg_profit
+            {base_join}
+            WHERE 1=1 {where}
+            GROUP BY o.pair, o.chain
+            ORDER BY net_profit DESC
+        """, tp).fetchall()
+
+        # 2. Per-venue-pair (buy_dex -> sell_dex) win rate
+        per_venue = self.conn.execute(f"""
+            SELECT o.buy_dex, o.sell_dex, o.chain,
+                COUNT(*) as trades,
+                SUM(CASE WHEN tr.included = 1 AND tr.reverted = 0 THEN 1 ELSE 0 END) as wins,
+                SUM(CASE WHEN tr.reverted = 1 THEN 1 ELSE 0 END) as reverts,
+                COALESCE(SUM(CAST(tr.actual_net_profit AS REAL)), 0) as net_profit,
+                COALESCE(AVG(CAST(tr.actual_net_profit AS REAL)), 0) as avg_profit
+            {base_join}
+            WHERE 1=1 {where}
+            GROUP BY o.buy_dex, o.sell_dex, o.chain
+            ORDER BY net_profit DESC
+        """, tp).fetchall()
+
+        # 3. Expected vs realized (for spread capture analysis)
+        expected_vs_realized = self.conn.execute(f"""
+            SELECT o.opportunity_id, o.pair, o.chain, o.buy_dex, o.sell_dex,
+                CAST(p.expected_net_profit AS REAL) as expected,
+                CAST(tr.actual_net_profit AS REAL) as realized,
+                CAST(tr.gas_cost_base AS REAL) as gas_cost,
+                CAST(tr.realized_profit_quote AS REAL) as realized_quote,
+                tr.gas_used,
+                CAST(p.gas_estimate AS REAL) as estimated_gas,
+                CAST(o.spread_bps AS REAL) as spread_bps,
+                o.detected_at,
+                ea.tx_hash
+            {base_join}
+            LEFT JOIN pricing_results p ON o.opportunity_id = p.opportunity_id
+            WHERE tr.included = 1 {where}
+            ORDER BY o.detected_at DESC
+            LIMIT 200
+        """, tp).fetchall()
+
+        # 4. Hourly PnL time series
+        hourly_pnl = self.conn.execute(f"""
+            SELECT
+                SUBSTR(o.detected_at, 1, 13) as hour,
+                COUNT(*) as trades,
+                SUM(CASE WHEN tr.included = 1 AND tr.reverted = 0 THEN 1 ELSE 0 END) as wins,
+                COALESCE(SUM(CAST(tr.actual_net_profit AS REAL)), 0) as net_profit,
+                COALESCE(SUM(CAST(tr.gas_cost_base AS REAL)), 0) as gas_cost
+            {base_join}
+            WHERE 1=1 {where}
+            GROUP BY SUBSTR(o.detected_at, 1, 13)
+            ORDER BY hour DESC
+            LIMIT 168
+        """, tp).fetchall()
+
+        # 5. Rejection analysis
+        rejection_reasons = self.conn.execute(f"""
+            SELECT rd.reason_code, o.chain, COUNT(*) as cnt,
+                COALESCE(AVG(CAST(p.expected_net_profit AS REAL)), 0) as avg_expected_profit
+            FROM risk_decisions rd
+            JOIN opportunities o ON rd.opportunity_id = o.opportunity_id
+            LEFT JOIN pricing_results p ON o.opportunity_id = p.opportunity_id
+            WHERE rd.approved = 0 {where}
+            GROUP BY rd.reason_code, o.chain
+            ORDER BY cnt DESC
+            LIMIT 20
+        """, tp).fetchall()
+
+        # 6. Gas efficiency
+        gas_efficiency = self.conn.execute(f"""
+            SELECT o.chain,
+                COUNT(*) as trades,
+                COALESCE(AVG(tr.gas_used), 0) as avg_gas_used,
+                COALESCE(AVG(CAST(p.gas_estimate AS REAL)), 0) as avg_estimated_gas,
+                COALESCE(AVG(CAST(tr.gas_cost_base AS REAL)), 0) as avg_gas_cost_eth
+            {base_join}
+            LEFT JOIN pricing_results p ON o.opportunity_id = p.opportunity_id
+            WHERE tr.included = 1 {where}
+            GROUP BY o.chain
+        """, tp).fetchall()
+
+        # 7. Compute aggregates
+        total_expected = sum(r["expected"] or 0 for r in expected_vs_realized)
+        total_realized = sum(r["realized"] or 0 for r in expected_vs_realized)
+        capture_rate = (total_realized / total_expected * 100) if total_expected else 0
+
+        return {
+            "per_pair": [dict(r) for r in per_pair],
+            "per_venue": [dict(r) for r in per_venue],
+            "expected_vs_realized": [dict(r) for r in expected_vs_realized],
+            "hourly_pnl": [dict(r) for r in hourly_pnl],
+            "rejection_reasons": [dict(r) for r in rejection_reasons],
+            "gas_efficiency": [dict(r) for r in gas_efficiency],
+            "spread_capture_rate_pct": round(capture_rate, 2),
+            "total_expected": total_expected,
+            "total_realized": total_realized,
+            "filters": {"chain": chain, "since": since, "until": until},
+        }
+
     def get_chain_opportunity_stats(self, since_iso: str) -> dict[str, dict]:
         """Return per-chain opportunity counts grouped by status."""
         rows = self.conn.execute(
@@ -421,9 +559,17 @@ class Repository:
         self.conn.commit()
         return cur.lastrowid  # type: ignore[return-value]
 
-    def get_pair(self, pair: str) -> dict | None:
+    def get_pair(self, pair: str, chain: str | None = None) -> dict | None:
+        """Fetch a pair row.
+
+        Prefer passing ``chain`` in production code so the lookup is unambiguous
+        across chains. The chainless form is kept for compatibility with tests
+        and older call sites that only manage one chain at a time.
+        """
+        if chain is not None:
+            return self.get_pair_on_chain(pair, chain)
         row = self.conn.execute(
-            "SELECT * FROM pairs WHERE pair = ?", (pair,)
+            "SELECT * FROM pairs WHERE pair = ? ORDER BY chain LIMIT 1", (pair,)
         ).fetchone()
         return _row_to_dict(row)
 
@@ -434,16 +580,26 @@ class Repository:
         ).fetchone()
         return _row_to_dict(row)
 
-    def get_enabled_pairs(self) -> list[dict]:
-        rows = self.conn.execute(
-            "SELECT * FROM pairs WHERE enabled = 1 ORDER BY pair"
-        ).fetchall()
+    def get_enabled_pairs(self, chain: str | None = None) -> list[dict]:
+        sql = "SELECT * FROM pairs WHERE enabled = 1"
+        params: tuple[Any, ...] = ()
+        if chain is not None:
+            sql += " AND chain = ?"
+            params = (chain,)
+        sql += " ORDER BY chain, pair"
+        rows = self.conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
-    def set_pair_enabled(self, pair: str, enabled: bool) -> None:
-        self.conn.execute(
-            "UPDATE pairs SET enabled = ? WHERE pair = ?", (int(enabled), pair)
-        )
+    def set_pair_enabled(self, pair: str, enabled: bool, chain: str | None = None) -> None:
+        if chain is not None:
+            self.conn.execute(
+                "UPDATE pairs SET enabled = ? WHERE pair = ? AND chain = ?",
+                (int(enabled), pair, chain),
+            )
+        else:
+            self.conn.execute(
+                "UPDATE pairs SET enabled = ? WHERE pair = ?", (int(enabled), pair)
+            )
         self.conn.commit()
 
     # ------------------------------------------------------------------

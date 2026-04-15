@@ -37,7 +37,7 @@ _db: "DbConnection | None" = None
 _TABLES_SQLITE = """
 CREATE TABLE IF NOT EXISTS pairs (
     pair_id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    pair            TEXT NOT NULL UNIQUE,
+    pair            TEXT NOT NULL,
     chain           TEXT NOT NULL,
     base_token      TEXT NOT NULL,
     quote_token     TEXT NOT NULL,
@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS pairs (
     risk_class      TEXT NOT NULL DEFAULT 'blue_chip',
     max_trade_size  TEXT NOT NULL DEFAULT '10',
     enabled         INTEGER NOT NULL DEFAULT 1,
-    created_at      TEXT NOT NULL
+    created_at      TEXT NOT NULL,
+    UNIQUE (pair, chain)
 );
 
 CREATE TABLE IF NOT EXISTS pools (
@@ -341,10 +342,96 @@ def init_db(db_path: str | Path | None = None) -> DbConnection:
             db = _connect_sqlite(url)
             db.executescript(_TABLES_SQLITE)
 
+    _ensure_pairs_chain_uniqueness(db)
     _ensure_trade_result_columns(db)
     db.commit()
     _db = db
     return db
+
+
+def _ensure_pairs_chain_uniqueness(db: DbConnection) -> None:
+    """Migrate legacy `pairs` uniqueness from `pair` to `(pair, chain)`.
+
+    Older builds keyed pairs globally by symbol, which is unsafe for a
+    multichain system because `WETH/USDC` on Arbitrum and Optimism are
+    distinct tradable entities. This migration keeps existing `pair_id`
+    values stable so `pools.pair_id` references remain valid on both SQLite
+    and PostgreSQL/Neon.
+    """
+    if db.backend == "sqlite":
+        row = db.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'pairs'"
+        ).fetchone()
+        create_sql = (row["sql"] if row else "") or ""
+        if "UNIQUE (pair, chain)" in create_sql or "UNIQUE(pair, chain)" in create_sql:
+            return
+
+        db.execute("PRAGMA foreign_keys=OFF")
+        db.execute("ALTER TABLE pairs RENAME TO pairs_old")
+        db.execute(
+            """
+            CREATE TABLE pairs (
+                pair_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                pair            TEXT NOT NULL,
+                chain           TEXT NOT NULL,
+                base_token      TEXT NOT NULL,
+                quote_token     TEXT NOT NULL,
+                base_decimals   INTEGER NOT NULL DEFAULT 18,
+                quote_decimals  INTEGER NOT NULL DEFAULT 6,
+                risk_class      TEXT NOT NULL DEFAULT 'blue_chip',
+                max_trade_size  TEXT NOT NULL DEFAULT '10',
+                enabled         INTEGER NOT NULL DEFAULT 1,
+                created_at      TEXT NOT NULL,
+                UNIQUE (pair, chain)
+            )
+            """
+        )
+        db.execute(
+            """
+            INSERT INTO pairs (
+                pair_id, pair, chain, base_token, quote_token,
+                base_decimals, quote_decimals, risk_class,
+                max_trade_size, enabled, created_at
+            )
+            SELECT
+                pair_id, pair, chain, base_token, quote_token,
+                base_decimals, quote_decimals, risk_class,
+                max_trade_size, enabled, created_at
+            FROM pairs_old
+            """
+        )
+        db.execute("DROP TABLE pairs_old")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_pairs_chain ON pairs(chain)")
+        db.execute("PRAGMA foreign_keys=ON")
+        return
+
+    legacy_constraints = db.execute(
+        """
+        SELECT con.conname
+        FROM pg_constraint con
+        JOIN pg_class rel ON rel.oid = con.conrelid
+        WHERE rel.relname = 'pairs'
+          AND con.contype = 'u'
+          AND pg_get_constraintdef(con.oid) = 'UNIQUE (pair)'
+        """
+    ).fetchall()
+    for row in legacy_constraints:
+        db.execute(f'ALTER TABLE pairs DROP CONSTRAINT "{row["conname"]}"')
+
+    composite_exists = db.execute(
+        """
+        SELECT 1
+        FROM pg_constraint con
+        JOIN pg_class rel ON rel.oid = con.conrelid
+        WHERE rel.relname = 'pairs'
+          AND con.contype = 'u'
+          AND pg_get_constraintdef(con.oid) = 'UNIQUE (pair, chain)'
+        """
+    ).fetchone()
+    if not composite_exists:
+        db.execute(
+            "ALTER TABLE pairs ADD CONSTRAINT pairs_pair_chain_key UNIQUE (pair, chain)"
+        )
 
 
 def _ensure_trade_result_columns(db: DbConnection) -> None:

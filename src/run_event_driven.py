@@ -122,7 +122,7 @@ class ChainExecutorSubmitter:
         self.executor = executor
         self.verifier = verifier
 
-    def submit(self, opportunity: Opportunity) -> tuple[str, str, int]:
+    def submit(self, opportunity: Opportunity) -> tuple[str, str, int, str]:
         tx_data = self.executor._build_transaction(opportunity)
         tx_hash = self.executor._sign_and_send(tx_data)
         tx_hash_hex = tx_hash.hex()
@@ -130,7 +130,8 @@ class ChainExecutorSubmitter:
             self.verifier.remember_submission(tx_hash_hex, opportunity)
         target_block = self.executor.w3.eth.block_number + 1 if self.executor.use_flashbots else 0
         bundle_id = f"flashbots:{target_block}" if self.executor.use_flashbots else ""
-        return tx_hash_hex, bundle_id, target_block
+        submission_type = "flashbots" if self.executor.use_flashbots else "public"
+        return tx_hash_hex, bundle_id, target_block, submission_type
 
 
 def build_execution_stack(

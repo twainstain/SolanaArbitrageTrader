@@ -38,7 +38,7 @@ class PairTableTests(unittest.TestCase):
             base_decimals=18, quote_decimals=6,
         )
         self.assertIsNotNone(pid)
-        p = self.repo.get_pair("WETH/USDC")
+        p = self.repo.get_pair_on_chain("WETH/USDC", "ethereum")
         self.assertIsNotNone(p)
         self.assertEqual(p["chain"], "ethereum")
         self.assertEqual(p["base_decimals"], 18)
@@ -51,7 +51,7 @@ class PairTableTests(unittest.TestCase):
 
     def test_disable_pair(self):
         self.repo.save_pair("WETH/USDC", "ethereum", "WETH", "USDC")
-        self.repo.set_pair_enabled("WETH/USDC", False)
+        self.repo.set_pair_enabled("WETH/USDC", False, chain="ethereum")
         enabled = self.repo.get_enabled_pairs()
         self.assertEqual(len(enabled), 0)
 
@@ -60,6 +60,27 @@ class PairTableTests(unittest.TestCase):
         self.repo.save_pair("WETH/USDC", "ethereum", "WETH", "USDC")
         enabled = self.repo.get_enabled_pairs()
         self.assertEqual(len(enabled), 1)
+
+    def test_same_pair_can_exist_on_multiple_chains(self):
+        eth_id = self.repo.save_pair("WETH/USDC", "ethereum", "WETH", "USDC")
+        arb_id = self.repo.save_pair("WETH/USDC", "arbitrum", "WETH", "USDC")
+        self.assertNotEqual(eth_id, arb_id)
+
+        enabled = self.repo.get_enabled_pairs()
+        self.assertEqual(len(enabled), 2)
+        self.assertEqual(
+            {row["chain"] for row in enabled if row["pair"] == "WETH/USDC"},
+            {"ethereum", "arbitrum"},
+        )
+
+    def test_disable_pair_only_on_requested_chain(self):
+        self.repo.save_pair("WETH/USDC", "ethereum", "WETH", "USDC")
+        self.repo.save_pair("WETH/USDC", "arbitrum", "WETH", "USDC")
+        self.repo.set_pair_enabled("WETH/USDC", False, chain="ethereum")
+
+        enabled = self.repo.get_enabled_pairs()
+        self.assertEqual(len(enabled), 1)
+        self.assertEqual(enabled[0]["chain"], "arbitrum")
 
     def test_get_nonexistent_pair(self):
         self.assertIsNone(self.repo.get_pair("FAKE/PAIR"))
@@ -131,7 +152,7 @@ class MonitoredPoolBootstrapTests(unittest.TestCase):
     def test_sync_monitored_pools_inserts_bootstrap_metadata(self):
         inserted = sync_monitored_pools(self.repo)
         self.assertGreater(inserted, 0)
-        pair = self.repo.get_pair("WETH/USDC")
+        pair = self.repo.get_pair_on_chain("WETH/USDC", "ethereum")
         self.assertIsNotNone(pair)
         pools = self.repo.get_enabled_pools_for_pair_name("WETH/USDC", chain="ethereum")
         self.assertGreaterEqual(len(pools), 2)
@@ -146,6 +167,14 @@ class MonitoredPoolBootstrapTests(unittest.TestCase):
         sync_monitored_pools(self.repo)
         self.assertGreater(self.repo.count_enabled_pools(), 0)
         self.assertGreater(self.repo.count_enabled_pools(chain="ethereum"), 0)
+
+    def test_sync_monitored_pools_creates_distinct_pair_rows_per_chain(self):
+        sync_monitored_pools(self.repo)
+        eth = self.repo.get_pair_on_chain("WETH/USDC", "ethereum")
+        arb = self.repo.get_pair_on_chain("WETH/USDC", "arbitrum")
+        self.assertIsNotNone(eth)
+        self.assertIsNotNone(arb)
+        self.assertNotEqual(eth["pair_id"], arb["pair_id"])
 
 
 # ---------------------------------------------------------------

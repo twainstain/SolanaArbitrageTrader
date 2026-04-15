@@ -43,12 +43,13 @@ class _MockSimulator:
 
 
 class _MockSubmitter:
-    def __init__(self):
+    def __init__(self, submission_type: str = "flashbots"):
         self.submitted = []
+        self.submission_type = submission_type
 
     def submit(self, opp):
         self.submitted.append(opp)
-        return "0xabc123", "bundle_1", 12345
+        return "0xabc123", "bundle_1", 12345, self.submission_type
 
 
 class _MockVerifier:
@@ -275,6 +276,18 @@ class PipelineFullExecutionTests(unittest.TestCase):
 
         self.assertEqual(result.final_status, "submitted")
         self.assertEqual(result.reason, "awaiting_verification")
+
+    def test_submission_type_persisted_from_submitter(self):
+        policy = RiskPolicy(execution_enabled=True)
+        sim = _MockSimulator(success=True)
+        sub = _MockSubmitter(submission_type="public")
+
+        pipeline = CandidatePipeline(self.repo, policy, sim, sub)
+        result = pipeline.process(_make_opp())
+
+        self.assertEqual(result.final_status, "submitted")
+        execution = self.repo.get_latest_execution_attempt(result.opportunity_id)
+        self.assertEqual(execution["submission_type"], "public")
 
 
 class _FakeBackend:

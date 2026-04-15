@@ -89,8 +89,12 @@ class RiskPolicy:
     # Minimum liquidity score (0.0-1.0)
     min_liquidity_score: float = 0.3
 
-    # Whether live execution is enabled (global kill switch)
+    # Whether live execution is enabled (global default)
     execution_enabled: bool = False
+
+    # Per-chain execution mode: "live", "simulated", or "disabled".
+    # If a chain is not in this dict, falls back to global execution_enabled.
+    chain_execution_mode: dict = field(default_factory=dict)
 
     def evaluate(
         self,
@@ -128,14 +132,23 @@ class RiskPolicy:
             "fee_included": opportunity.fees_pre_included,
         }
 
-        # Rule 1: Global kill switch — simulation mode.
-        # When execution is disabled, we still evaluate ALL other rules to determine
-        # if the trade WOULD have been approved. This lets the dashboard show
-        # "simulation_approved" vs "simulation_rejected" instead of just "rejected".
-        simulation_mode = not self.execution_enabled
+        # Rule 1: Execution mode — per-chain or global fallback.
+        # When a chain is in simulated mode, we still evaluate ALL other rules
+        # to show "simulation_approved" vs "simulation_rejected" on the dashboard.
+        chain = opportunity.chain.lower() if opportunity.chain else ""
+        chain_mode = self.chain_execution_mode.get(chain)
+        if chain_mode == "disabled":
+            return RiskVerdict(False, "chain_disabled", {
+                **analysis, "reason_detail": f"Execution disabled for chain '{chain}'."
+            })
+        if chain_mode == "live":
+            simulation_mode = False
+        elif chain_mode == "simulated":
+            simulation_mode = True
+        else:
+            simulation_mode = not self.execution_enabled
 
         # Rule 2a: Minimum spread percentage (per-chain)
-        chain = opportunity.chain.lower() if opportunity.chain else ""
         effective_min_spread = self.chain_min_spread_pct.get(chain, self.min_spread_pct)
         if opportunity.gross_spread_pct < effective_min_spread:
             analysis["reason_detail"] = (
@@ -217,6 +230,19 @@ class RiskPolicy:
         analysis["reason_detail"] = "All risk checks passed."
         return RiskVerdict(True, "approved", analysis)
 
+    def get_chain_mode(self, chain: str) -> str:
+        """Return the execution mode for a chain: 'live', 'simulated', or 'disabled'."""
+        mode = self.chain_execution_mode.get(chain.lower())
+        if mode:
+            return mode
+        return "live" if self.execution_enabled else "simulated"
+
+    def set_chain_mode(self, chain: str, mode: str) -> None:
+        """Set execution mode for a specific chain."""
+        if mode not in ("live", "simulated", "disabled"):
+            raise ValueError(f"Invalid mode: {mode}")
+        self.chain_execution_mode[chain.lower()] = mode
+
     def to_dict(self) -> dict:
         """Serialize the current policy for logging/API."""
         return {
@@ -232,4 +258,5 @@ class RiskPolicy:
             "max_exposure_per_pair": str(self.max_exposure_per_pair),
             "min_liquidity_score": self.min_liquidity_score,
             "execution_enabled": self.execution_enabled,
+            "chain_execution_mode": dict(self.chain_execution_mode),
         }

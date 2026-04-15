@@ -280,19 +280,24 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             fetchJSON('/health'), fetchJSON('/execution'), fetchJSON('/pause'),
             fetchJSON('/metrics'), fetchJSON('/pnl'),
         ]);
+
+        // Compute execution status from per-chain modes
+        const execChains = exec.chains || {};
+        const liveList = Object.entries(execChains).filter(function(e) { return e[1].mode === 'live'; }).map(function(e) { return e[0]; });
+        const simCount = Object.keys(execChains).length - liveList.length;
+        let execHtml;
+        if (liveList.length > 0) {
+            execHtml = '<div class="card-value status-ok">' + liveList.map(function(c) { return c.toUpperCase(); }).join(', ') + ' LIVE</div>'
+                + '<div class="card-sub">' + simCount + ' chains simulated</div>';
+        } else {
+            execHtml = '<div class="card-value status-warn">ALL SIMULATED</div>';
+        }
+
         const grid = document.getElementById('status-grid');
         grid.innerHTML = `
             <div class="card">
                 <div class="card-title">Execution</div>
-                ${(() => {
-                    const chains = exec.chains || {};
-                    const live = Object.entries(chains).filter(([,v]) => v.mode === 'live').map(([k]) => k);
-                    if (live.length > 0) {
-                        return '<div class="card-value status-ok">' + live.map(c => c.toUpperCase()).join(', ') + ' LIVE</div>'
-                            + '<div class="card-sub">' + (Object.keys(chains).length - live.length) + ' chains simulated</div>';
-                    }
-                    return '<div class="card-value status-warn">ALL SIMULATED</div>';
-                })()}
+                ` + execHtml + `
             </div>
             <div class="card">
                 <div class="card-title">Paused</div>

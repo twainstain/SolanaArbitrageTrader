@@ -166,7 +166,14 @@ class ChainExecutor:
 
         # Read from environment.
         self.private_key = os.environ.get("EXECUTOR_PRIVATE_KEY", "")
-        self.contract_address = os.environ.get("EXECUTOR_CONTRACT", "")
+
+        # Per-chain contract: EXECUTOR_CONTRACT_ARBITRUM, EXECUTOR_CONTRACT_BASE, etc.
+        # Falls back to generic EXECUTOR_CONTRACT.
+        chain_key = config.dexes[0].chain or "ethereum"
+        self.contract_address = (
+            os.environ.get(f"EXECUTOR_CONTRACT_{chain_key.upper()}", "")
+            or os.environ.get("EXECUTOR_CONTRACT", "")
+        )
 
         if not self.private_key:
             raise ChainExecutorError(
@@ -175,8 +182,8 @@ class ChainExecutor:
             )
         if not self.contract_address:
             raise ChainExecutorError(
-                "EXECUTOR_CONTRACT not set.  "
-                "Deploy FlashArbExecutor.sol and add the address to .env."
+                f"EXECUTOR_CONTRACT not set for chain '{chain_key}'.  "
+                f"Set EXECUTOR_CONTRACT_{chain_key.upper()} or EXECUTOR_CONTRACT in .env."
             )
 
         # Determine chain from the first DEX config.

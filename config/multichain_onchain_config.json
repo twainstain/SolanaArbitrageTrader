@@ -19,7 +19,7 @@
     "arbitrum": "live",
     "optimism": "simulated",
     "ethereum": "simulated",
-    "base": "simulated"
+    "base": "live"
   },
   "extra_pairs": [
     {"pair": "WETH/USDT", "base_asset": "WETH", "quote_asset": "USDT", "trade_size": 1.0},

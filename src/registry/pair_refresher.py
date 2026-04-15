@@ -51,6 +51,9 @@ class PairRefresher:
         self.interval = interval_seconds
         self.repository = repository
         self._pairs: list[DiscoveredPair] = []
+        # Lock ordering: this lock may be held when calling tokens.register_token(),
+        # which acquires tokens._dynamic_lock.  Order: _lock → _dynamic_lock.
+        # Never acquire _lock while _dynamic_lock is held.
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._running = False

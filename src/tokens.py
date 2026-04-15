@@ -190,6 +190,10 @@ import threading
 
 _logger = logging.getLogger(__name__)
 _dynamic_tokens: dict[str, str] = {}  # key: "chain:SYMBOL" → address
+# Lock ordering: _dynamic_lock is a leaf lock — never acquire another lock
+# while holding it.  Callers (e.g., pair_refresher) may hold their own lock
+# before calling register_token/resolve_token_address, so _dynamic_lock must
+# always be the innermost (last-acquired) lock to prevent deadlocks.
 _dynamic_lock = threading.Lock()
 _unresolved: dict[str, int] = {}  # key: "chain:SYMBOL" → miss count
 

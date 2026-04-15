@@ -97,6 +97,10 @@ class LatencyTracker:
                         queued. If None, falls back to current scan marks
                         (may be stale if a new scan has started).
         """
+        # Build the record under the lock (reads shared _scan state),
+        # then release the lock BEFORE file I/O.  write()+flush() can
+        # block 10-100ms on slow storage — holding the lock during I/O
+        # would stall the scanner and consumer threads.
         with self._lock:
             total_scan_ms = (time.monotonic() - self._scan.started_at) * 1000
             record = {
@@ -110,15 +114,13 @@ class LatencyTracker:
                 "spread_pct": round(spread_pct, 4),
                 "net_profit": round(net_profit, 8),
                 "status": status,
-                # Scan-level timings — use snapshot if available.
                 "scan_marks_ms": scan_marks if scan_marks is not None else dict(self._scan.marks),
-                # Pipeline-level timings (per stage).
                 "pipeline_ms": {k: round(float(v), 2) for k, v in pipeline_timings.items()},
-                # Total from scan start to this pipeline result.
                 "total_scan_to_result_ms": round(total_scan_ms, 2),
             }
-            self._file.write(json.dumps(record) + "\n")
-            self._file.flush()
+        # File I/O outside lock — won't block other threads.
+        self._file.write(json.dumps(record) + "\n")
+        self._file.flush()
 
     def record_scan_summary(
         self,
@@ -135,6 +137,7 @@ class LatencyTracker:
             rejected_count: number of opportunities rejected by scanner
             status: overall scan result — "no_opportunity", "queued", "market_error"
         """
+        # Same pattern as record_pipeline: build record under lock, I/O outside.
         with self._lock:
             total_ms = (time.monotonic() - self._scan.started_at) * 1000
             record = {
@@ -148,8 +151,8 @@ class LatencyTracker:
                 "scan_marks_ms": dict(self._scan.marks),
                 "total_scan_ms": round(total_ms, 2),
             }
-            self._file.write(json.dumps(record) + "\n")
-            self._file.flush()
+        self._file.write(json.dumps(record) + "\n")
+        self._file.flush()
 
     def close(self) -> None:
         self._file.close()

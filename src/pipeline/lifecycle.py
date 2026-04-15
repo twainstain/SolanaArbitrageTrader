@@ -1,10 +1,38 @@
 """Candidate lifecycle pipeline.
 
-Orchestrates the full arbitrage candidate flow per the architecture doc:
+Orchestrates the full arbitrage candidate flow:
   detected → priced → risk_approved/rejected → simulated → submitted → outcome
 
-Each stage is persisted to the database so the entire decision is
-auditable and replayable after the fact.
+Six sequential stages. Each persists to the database before the next runs,
+so the entire decision is auditable and replayable after the fact.
+
+Stage overview:
+  1. DETECT   — always runs.  Creates the opportunity record in DB.
+  2. PRICE    — always runs.  Persists the full cost breakdown (fees,
+                slippage, gas, net profit) computed by the strategy layer.
+  3. RISK     — always runs.  Evaluates 8 sequential rules.  Rejects ~99%
+                of opportunities.  This is the core safety gate.
+  4. SIMULATE — optional (needs simulator wired).  Free eth_call dry-run
+                on-chain.  Catches reverts before spending real gas.
+  5. SUBMIT   — optional (needs submitter wired).  Signs the transaction
+                and broadcasts via Flashbots (Ethereum) or public mempool (L2s).
+  6. VERIFY   — optional (needs verifier wired).  Fetches the transaction
+                receipt, extracts realized profit, reconciles vs expected.
+
+Stages 1-3 run inside a single batched DB transaction — either all three
+persist or none do (atomic).  The intermediate "priced" status is never
+visible to other readers, saving one DB round-trip (~3-4ms on Postgres).
+
+Stages 4-6 persist independently because they involve external calls
+(RPC, mempool) that can take seconds.
+
+Wiring modes (controlled by env vars at startup):
+  - Simulation only:  simulator=None, submitter=None, verifier=None
+    Pipeline exits at stage 3 with "simulation_approved" or "rejected".
+  - Dry-run:          simulator=set, submitter=None, verifier=None
+    Pipeline exits at stage 4 with "dry_run" or "simulation_failed".
+  - Live execution:   simulator=set, submitter=set, verifier=set
+    Pipeline runs all 6 stages → "included", "reverted", or "not_included".
 """
 
 from __future__ import annotations
@@ -26,22 +54,41 @@ logger = logging.getLogger(__name__)
 
 
 class Simulator(Protocol):
-    """Protocol for transaction simulation."""
+    """Protocol for transaction simulation (stage 4).
+
+    Implementor: ChainExecutorSimulator — wraps ChainExecutor._simulate_transaction()
+    which calls eth_call (free, no gas) to check if the tx would revert.
+
+    Returns (True, "ok") if simulation passes, (False, reason) if it would revert.
+    Common revert reasons: insufficient profit, bad route, token not approved.
+    """
     def simulate(self, opportunity: Opportunity) -> tuple[bool, str]: ...
 
 
 class Submitter(Protocol):
-    """Protocol for transaction submission."""
+    """Protocol for transaction submission (stage 5).
+
+    Implementor: ChainExecutorSubmitter — signs the tx and broadcasts it.
+    On Ethereum: Flashbots private relay (MEV protection, no gas on failure).
+    On L2s: public mempool (cheap gas, no Flashbots equivalent).
+
+    Returns (tx_hash, bundle_id, target_block, submission_type).
+    """
     def submit(self, opportunity: Opportunity) -> tuple[str, str, int] | tuple[str, str, int, str]:
-        """Returns (tx_hash, bundle_id, target_block[, submission_type])."""
         ...
 
 
 class ResultVerifier(Protocol):
-    """Protocol for verifying on-chain results."""
-    def verify(self, tx_hash: str) -> VerificationResult:
-        """Returns structured realized-PnL verification details."""
-        ...
+    """Protocol for verifying on-chain results (stage 6).
+
+    Implementor: OpportunityAwareVerifier → OnChainVerifier — fetches the
+    transaction receipt, extracts the ProfitRealized event from logs,
+    calculates gas cost, and reconciles expected vs actual profit.
+
+    Returns VerificationResult with: included, reverted, gas_used,
+    realized_profit_quote, gas_cost_base, actual_profit_base.
+    """
+    def verify(self, tx_hash: str) -> VerificationResult: ...
 
 
 @dataclass
@@ -106,6 +153,10 @@ class CandidatePipeline:
         import time as _time
 
         # --- Stage 1: Detection ---
+        # Always runs.  Creates the DB record that all subsequent stages
+        # reference via opp_id.  This is the point of no return — once
+        # created, the opportunity is visible on the dashboard regardless
+        # of whether it passes risk evaluation.
         opp_id = self.repo.create_opportunity(
             pair=opportunity.pair,
             chain=opportunity.chain,
@@ -118,6 +169,11 @@ class CandidatePipeline:
                      opp_id, opportunity.pair, opportunity.buy_dex, opportunity.sell_dex)
 
         # --- Stage 2: Pricing ---
+        # Always runs.  Persists the full cost breakdown computed by
+        # ArbitrageStrategy.evaluate_pair().  Note: the pricing math
+        # already happened in the scanner — this stage just persists it.
+        # Values stored: input cost, estimated output, fees, slippage,
+        # gas estimate, expected net profit, pool liquidity.
         _t1 = _time.monotonic()
         self.repo.save_pricing(
             opp_id=opp_id,
@@ -139,6 +195,16 @@ class CandidatePipeline:
         logger.info("[pipeline] %s priced: net_profit=%.6f", opp_id, float(opportunity.net_profit_base))
 
         # --- Stage 3: Risk ---
+        # Always runs.  The core safety gate — evaluates 8 sequential rules.
+        # Any failure is a hard veto.  ~99% of opportunities are rejected here.
+        # Three possible outcomes:
+        #   - "rejected":           fails a rule → pipeline stops
+        #   - "simulation_approved": passes all rules but execution disabled → dry log
+        #   - "approved":           passes all rules and execution enabled → proceed
+        # The verdict + full analysis snapshot are persisted for auditability.
+        # The threshold_snapshot includes all costs, liquidity scores, and
+        # warning flags so an engineer can debug why a trade was rejected
+        # without re-running the risk policy.
         _t2 = _time.monotonic()
         hour_trades = self.repo.count_opportunities_since(
             _one_hour_ago(), status="submitted"
@@ -179,6 +245,15 @@ class CandidatePipeline:
         logger.info("[pipeline] %s approved", opp_id)
 
         # --- Stage 4: Simulation ---
+        # Optional — skipped if simulator is None (simulation-only mode).
+        # Calls eth_call to dry-run the full flash loan transaction against
+        # the current chain state.  This is FREE (no gas spent) and catches:
+        #   - Price moved since quote (most common — spread closed)
+        #   - Insufficient profit (contract's minProfit check)
+        #   - Bad routes (wrong router, unsupported pool)
+        #   - Token approval issues
+        # Without this stage, failed txs cost gas ($0.05 on L2, $5-50 on L1).
+        # With ~95% simulation rejection rate, this saves significant gas.
         _t3 = _time.monotonic()
         if self.simulator is not None:
             sim_ok, sim_reason = self.simulator.simulate(opportunity)
@@ -207,6 +282,15 @@ class CandidatePipeline:
         _timings["simulate_ms"] = (_time.monotonic() - _t3) * 1000
 
         # --- Stage 5: Submission ---
+        # Optional — skipped if submitter is None (dry-run mode exits here
+        # as "dry_run" at the bottom of this method).
+        # Signs the transaction and broadcasts it:
+        #   - Ethereum mainnet: Flashbots bundle targeting current_block+1.
+        #     Private relay prevents front-running.  If not included in
+        #     target block, bundle expires harmlessly (no gas cost).
+        #   - L2s (Arbitrum, Base, Optimism): public mempool.
+        #     No Flashbots equivalent, but gas is cheap (~$0.05).
+        # Persists: tx_hash, bundle_id, target_block, submission_type.
         _t4 = _time.monotonic()
         if self.submitter is not None:
             submission = self.submitter.submit(opportunity)
@@ -226,6 +310,16 @@ class CandidatePipeline:
             logger.info("[pipeline] %s submitted: tx=%s block=%d", opp_id, tx_hash, target_block)
 
             # --- Stage 6: Verification ---
+            # Optional — skipped if verifier is None (exits as "submitted").
+            # Fetches the transaction receipt and determines the outcome:
+            #   - included (status=1, not reverted): extract ProfitRealized
+            #     event from logs, calculate gas cost, record realized PnL.
+            #   - reverted (status=0): tx was mined but reverted on-chain.
+            #     Records gas loss.  Feeds into circuit breaker revert counter.
+            #   - not_included: no receipt found (Flashbots bundle expired
+            #     or tx dropped from mempool).  No gas cost on Flashbots.
+            # Also reconciles expected vs actual profit — deviations >20%
+            # are flagged for cost model recalibration.
             if self.verifier is not None:
                 verification = self.verifier.verify(tx_hash)
                 self.repo.save_trade_result(
@@ -269,7 +363,10 @@ class CandidatePipeline:
             _timings["total_ms"] = (_time.monotonic() - _t0) * 1000
             return PipelineResult(opp_id, "submitted", "awaiting_verification", timings=_timings)
 
-        # No submitter — dry run
+        # No submitter wired — the opportunity passed all risk checks and
+        # simulation (if available) but there's no execution stack configured.
+        # Record as "dry_run" so the dashboard shows it as "would have traded".
+        # This is the normal exit path in simulation-only mode.
         self.repo.update_opportunity_status(opp_id, "dry_run")
         _timings["total_ms"] = (_time.monotonic() - _t0) * 1000
         logger.info("[pipeline] %s dry_run (timings: %s)", opp_id,

@@ -264,17 +264,18 @@ def create_app(
     def get_opportunities(limit: int = 50, window: Optional[str] = None,
                           chain: Optional[str] = None,
                           start: Optional[str] = None,
-                          end: Optional[str] = None):
+                          end: Optional[str] = None,
+                          status: Optional[str] = None,
+                          pair: Optional[str] = None):
         """Get recent opportunities with net_profit and execution data.
 
         Filters (all optional):
           - window: predefined window key (5m, 15m, 1h, 4h, 8h, 24h, 3d, 1w, 1m)
-          - start: ISO timestamp (UTC) — show opportunities detected >= start
-          - end: ISO timestamp (UTC) — show opportunities detected <= end
+          - start/end: ISO timestamp (UTC)
           - chain: filter by chain name
+          - status: filter by opportunity status
+          - pair: filter by trading pair
           - limit: max rows (default 50)
-
-        ``start``/``end`` take precedence over ``window`` when both are provided.
         """
         repo = _get_repo()
 
@@ -313,6 +314,12 @@ def create_app(
         if chain:
             conditions.append("o.chain = ?")
             params.append(chain)
+        if status:
+            conditions.append("o.status = ?")
+            params.append(status)
+        if pair:
+            conditions.append("o.pair = ?")
+            params.append(pair)
 
         if conditions:
             query += " WHERE " + " AND ".join(conditions)

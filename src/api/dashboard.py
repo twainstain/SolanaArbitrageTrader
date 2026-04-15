@@ -155,6 +155,26 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <tbody></tbody>
     </table>
 
+    <!-- Status Filter -->
+    <div class="filter-row">
+        <label>Status:</label>
+        <select id="status-filter" onchange="onStatusFilter()">
+            <option value="">All</option>
+            <option value="simulation_approved">Simulation Approved</option>
+            <option value="approved">Approved</option>
+            <option value="submitted">Submitted</option>
+            <option value="included">Included</option>
+            <option value="reverted">Reverted</option>
+            <option value="rejected">Rejected</option>
+            <option value="dry_run">Dry Run</option>
+            <option value="simulation_failed">Sim Failed</option>
+        </select>
+        <label>Pair:</label>
+        <select id="pair-filter" onchange="onPairFilter()">
+            <option value="">All Pairs</option>
+        </select>
+    </div>
+
     <!-- Recent Opportunities (filtered by selected time window) -->
     <h2 id="opp-header">Recent Opportunities</h2>
     <table id="opp-table">
@@ -181,6 +201,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     const WINDOWS = ['5m','15m','1h','4h','8h','24h','3d','1w','1m'];
     let currentWindow = '15m';
     let selectedChain = '';
+    let selectedStatus = '';
+    let selectedPair = '';
     let customStart = '';
     let customEnd = '';
     let oppSortField = 'profit';
@@ -431,6 +453,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     function sortChains(field) { chainSortField = field; renderChains(); }
 
+    function onStatusFilter() {
+        selectedStatus = document.getElementById('status-filter').value;
+        loadOpportunities();
+    }
+    function onPairFilter() {
+        selectedPair = document.getElementById('pair-filter').value;
+        loadOpportunities();
+    }
+
     async function loadOpportunities() {
         let url = '/opportunities?limit=50';
         if (customStart) {
@@ -440,7 +471,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             url += '&window=' + currentWindow;
         }
         if (selectedChain) url += '&chain=' + selectedChain;
+        if (selectedStatus) url += '&status=' + selectedStatus;
+        if (selectedPair) url += '&pair=' + selectedPair;
         oppData = await fetchJSON(url);
+        // Populate pair filter from data
+        const pairs = [...new Set(oppData.map(function(o) { return o.pair; }))].sort();
+        const pairSel = document.getElementById('pair-filter');
+        const curPair = pairSel.value;
+        pairSel.innerHTML = '<option value="">All Pairs</option>' +
+            pairs.map(function(p) { return '<option value="' + p + '"' + (p === curPair ? ' selected' : '') + '>' + p + '</option>'; }).join('');
         renderOpps();
     }
 

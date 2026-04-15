@@ -1,11 +1,29 @@
-"""Pair and pool registry.
+"""Pair and pool registry — in-memory whitelist of tradable pairs.
 
-Per the architecture doc, the registry:
-  - defines what the system is allowed to trade
-  - maintains supported tokens and DEX pools
-  - maps canonical pairs to pool addresses
-  - stores pair metadata: decimals, fee tiers, liquidity class, risk category
-  - starts with high-liquidity pairs only (whitelist, not open discovery)
+WHY THIS EXISTS:
+  The bot needs a single source of truth for "what am I allowed to trade?"
+  This registry holds pair metadata (decimals, risk class, max trade size)
+  and their associated pool addresses. It acts as a whitelist — pairs not
+  in the registry cannot be traded, even if the scanner finds them.
+
+vs. other registry files:
+  - discovery.py:       finds pairs dynamically via DexScreener API
+  - pool_discovery.py:  finds pool addresses via factory contracts
+  - monitored_pools.py: hardcoded bootstrap pool addresses
+  - pair_refresher.py:  background thread that re-runs discovery hourly
+  - THIS FILE:          in-memory data structures and static presets
+
+DATA MODEL:
+  PairEntry → has many PoolEntry objects
+  PairRegistry → dict of PairEntry keyed by pair name
+
+  Example: PairEntry("WETH/USDC") has pools on Uniswap (0.05% fee),
+  Uniswap (0.30% fee), PancakeSwap (0.25% fee).
+
+CLASSIFICATION:
+  LiquidityClass: HIGH (>$10M), MEDIUM ($1M-$10M), LOW (<$1M)
+  RiskCategory:   BLUE_CHIP (WETH, WBTC, stables), ESTABLISHED (UNI, LINK),
+                  VOLATILE (meme coins — not traded in production)
 """
 
 from __future__ import annotations

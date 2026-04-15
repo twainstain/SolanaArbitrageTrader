@@ -1,12 +1,31 @@
 """Background pair discovery — auto-refresh top trading pairs every hour.
 
-Queries DexScreener for high-volume pairs on 2+ DEXes, caches them,
-and updates the bot's scan list. Runs as a daemon thread.
+WHY THIS EXISTS:
+  Markets change.  A pair that had arb opportunity yesterday may not today,
+  and new high-volume pairs appear regularly.  The PairRefresher runs in a
+  background thread and re-queries DexScreener every hour to find the best
+  pairs.  Discovered pairs are added to the bot's scan list automatically.
+
+HOW IT WORKS:
+  1. On startup: load cached pairs from DB (fast, no network call)
+  2. If no cache: do a synchronous DexScreener query (blocks startup ~5s)
+  3. Start background thread that re-queries every hour
+  4. Each refresh: discover_best_pairs() → register token addresses →
+     persist to DB → update in-memory list
+  5. Main scanner reads get_pairs() to expand its scan list
+
+DATA FLOW:
+  DexScreener API → discover_best_pairs() → PairRefresher._pairs (in-memory)
+                                           → repository.replace_discovered_pairs() (DB)
+                                           → register_token() (dynamic token registry)
+
+THREAD SAFETY:
+  _lock protects _pairs list.  get_pairs() returns a copy.
+  Lock ordering: _lock → tokens._dynamic_lock (see lock ordering docs).
 
 Usage:
     refresher = PairRefresher(interval_seconds=3600)
     refresher.start()
-    # ... later ...
     pairs = refresher.get_pairs()  # returns cached DiscoveredPair list
 """
 

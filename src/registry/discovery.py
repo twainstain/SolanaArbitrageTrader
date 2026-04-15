@@ -1,13 +1,29 @@
 """Smart pair discovery — find the best ERC-20 pairs for arbitrage.
 
-Per the video recommendations:
-  - sort tokens by size or volume
-  - look for tokens traded on multiple exchanges
-  - prefer active markets
-  - use ERC-20 tokens for this strategy
+WHY THIS EXISTS:
+  Instead of hardcoding which pairs to scan, we dynamically discover the
+  best candidates by querying DexScreener's public API.  A good arb pair
+  needs: (1) high volume (active market), (2) presence on 2+ DEXes on the
+  same chain (price discrepancies possible), and (3) deep liquidity
+  (trades won't move the price against us).
 
-Queries DexScreener to find high-volume pairs present on 2+ DEXs
-on the same chain, ranked by arbitrage potential.
+HOW IT WORKS:
+  1. Search DexScreener for well-known tokens (WETH, WBTC, USDC, etc.)
+  2. Group results by (pair_name, chain) — e.g., ("WETH/USDC", "arbitrum")
+  3. Filter: must be on 2+ DEXes, meet volume/liquidity minimums
+  4. Score: volume × dex_count × blue_chip_bonus (2x for WETH/USDC vs. unknown pairs)
+  5. Return top N pairs sorted by score
+
+SCORING LOGIC:
+  score = total_24h_volume × number_of_dexes × (2.0 if blue_chip else 1.0)
+
+  A pair with $1M volume on 3 DEXes scores 3x higher than the same pair
+  on 1 DEX.  Blue chip pairs (WETH, WBTC, USDC, USDT) get a 2x bonus
+  because they have more reliable pricing and deeper liquidity.
+
+CALLED BY:
+  PairRefresher._refresh() — runs every hour in a background thread.
+  Results are cached in DB and used to expand the bot's scan list.
 """
 
 from __future__ import annotations

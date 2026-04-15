@@ -1,4 +1,23 @@
-"""Known monitored pools and bootstrap sync for repository metadata."""
+"""Known monitored pools — hardcoded high-liquidity pool addresses.
+
+WHY THIS EXISTS:
+  The event-driven scanner listens for Swap events on specific pool addresses
+  to trigger rescan cycles.  These addresses must be known at startup before
+  any discovery or DexScreener queries run.  This file provides a hardcoded
+  bootstrap set of the highest-liquidity pools on each chain.
+
+vs. pool_discovery.py:
+  pool_discovery.py dynamically queries factory contracts to find pools.
+  This file provides a static fallback that works even if RPC is down.
+  Both are persisted to the same `pools` table — sync_monitored_pools()
+  is idempotent (save_pool_if_missing skips duplicates).
+
+WHAT sync_monitored_pools() DOES:
+  For each pool in MONITORED_POOLS:
+    1. Ensure the pair exists in the pairs table
+    2. Insert the pool if not already present (idempotent)
+  Called once at startup from run_event_driven.py.
+"""
 
 from __future__ import annotations
 

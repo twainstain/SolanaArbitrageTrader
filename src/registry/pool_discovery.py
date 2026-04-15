@@ -1,11 +1,32 @@
 """On-chain pool discovery via factory contracts.
 
-Queries Uniswap V3 and Solidly factory contracts to resolve pool addresses
-for configured trading pairs.  Discovered pools are persisted to DB via
-``repo.save_pool_if_missing()``.
+Queries Uniswap V3 and Solidly (Velodrome/Aerodrome) factory contracts to
+resolve pool addresses for configured trading pairs.
 
-This runs once at startup — pool addresses are immutable, so there is no
-need to re-discover on every scan cycle.
+WHY THIS EXISTS:
+  Pool addresses are deterministic (CREATE2) but not hardcoded in our config.
+  Instead of manually looking up every pool address for every pair on every
+  chain, we call the factory's ``getPool(tokenA, tokenB, fee)`` at startup to
+  discover them automatically.
+
+WHEN IT RUNS:
+  Once at startup via ``discover_and_persist_pools()``.  Pool addresses are
+  immutable (they never change once deployed), so re-running is unnecessary.
+  Discovered pools are persisted to DB — subsequent startups load from cache.
+
+WHAT IT DISCOVERS:
+  - Uniswap V3 pools across 3 fee tiers (500, 3000, 10000 = 0.05%, 0.30%, 1%)
+  - Solidly-fork pools (Velodrome on Optimism, Aerodrome on Base) in both
+    volatile (20 bps) and stable (2 bps) variants
+  - Tries bridged USDC (USDC.e / USDbC) as fallback if native USDC pool
+    doesn't exist (common on L2s where liquidity migrated from bridged to native)
+
+FLOW:
+  For each (pair, chain):
+    1. Resolve token addresses from the token registry
+    2. Call factory.getPool() for each fee tier / pool type
+    3. Filter out zero addresses (pool doesn't exist for that fee tier)
+    4. Persist to pools table via save_pool_if_missing() (skips duplicates)
 """
 
 from __future__ import annotations
@@ -60,6 +81,12 @@ SOLIDLY_FACTORY_ABI = [
     }
 ]
 
+# Uniswap V3 fee tiers to probe.  Each fee tier has a separate pool contract.
+# 500  = 0.05% (correlated pairs like USDC/USDT — tight spread, high volume)
+# 3000 = 0.30% (standard pairs like WETH/USDC — most liquidity lives here)
+# 10000 = 1.00% (exotic/long-tail pairs — wide spread, low volume)
+# We skip 100 (0.01%) because it's only used by stable-stable and rarely
+# has arb opportunities worth the gas.
 V3_FEE_TIERS = (500, 3000, 10000)
 
 
@@ -159,7 +186,16 @@ def discover_and_persist_pools(
 ) -> int:
     """Discover pools for all configured pairs and persist to DB.
 
-    Returns the number of newly inserted pools.
+    This is the main entry point, called once at startup from
+    run_event_driven.py.  For each pair on each chain it:
+      1. Resolves token addresses (WETH → 0xC02a... on ethereum)
+      2. Ensures the pair exists in the pairs table
+      3. Calls discover_uniswap_v3_pools() for V3 pools
+      4. Calls discover_solidly_pools() for Velodrome/Aerodrome pools
+      5. Persists new pools via save_pool_if_missing() (idempotent)
+
+    Returns the number of newly inserted pools (0 on subsequent startups
+    if all pools were already discovered).
     """
     from persistence.repository import Repository as _Repo
 

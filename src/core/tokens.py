@@ -92,6 +92,7 @@ class TokenAddresses:
     wsteth: str | None = None   # Lido Wrapped Staked ETH
     cbeth: str | None = None    # Coinbase Wrapped Staked ETH
     aero: str | None = None     # Aerodrome native token (Base)
+    wavax: str | None = None    # Wrapped AVAX (Avalanche native)
 
 
 # Canonical contract addresses per chain.
@@ -162,10 +163,11 @@ CHAIN_TOKENS: dict[str, TokenAddresses] = {
         wsteth="0x1F32b1c2345538c0c6f582fCB022739c4A194Ebb",
     ),
     "avax": TokenAddresses(
-        weth="0x49D5c2BdFfac6CE2BFdB6640F4F80f226bc10bAB",
+        weth="0x49D5c2BdFfac6CE2BFdB6640F4F80f226bc10bAB",  # WETH.e (bridged, low liquidity)
         usdc="0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
         usdt="0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7",
         wbtc="0x50b7545627a5162F82A992c33b87aDc75187B218",
+        wavax="0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
     ),
     "fantom": TokenAddresses(
         weth="0x74b23882a30290451A17c44f4F05243b6b58C76d",
@@ -210,6 +212,7 @@ SYMBOL_TO_ATTR: dict[str, str] = {
     "WSTETH": "wsteth", "wstETH": "wsteth",
     "CBETH": "cbeth", "cbETH": "cbeth",
     "AERO": "aero",
+    "WAVAX": "wavax", "AVAX": "wavax",
     "USDC.E": "usdc_e",
     "USDBC": "usdc_e",
 }

@@ -93,6 +93,14 @@ MONITORED_POOLS: dict[str, dict[str, list[str]]] = {
             "0x6dA98Bde0068d10DDD11b468b197eA97D96F96Bc",  # Velodrome volatile
         ],
     },
+    "avax": {
+        "WAVAX/USDC": [
+            "0xfAe3f424a0a47706811521E3ee268f00cFb5c45E",  # Uniswap V3 0.05%
+        ],
+        "WAVAX/USDT": [
+            "0x78b58A7E21b08f1FCeB8d6AE9a235ABB900b5716",  # Uniswap V3 0.05%
+        ],
+    },
 }
 
 

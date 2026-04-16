@@ -141,6 +141,10 @@ SWAP_ROUTERS: dict[str, dict[str, str]] = {
     "bsc": {
         "pancakeswap_v3": "0x1b81D678ffb9C0263b24A97847620C99d213eB14",
     },
+    "avax": {
+        "uniswap_v3": "0xbb00FF08d01D300023C629E8fFfFcb65A5a578cE",
+        "sushi_v3": "0xFB7eF66a7e61224DD6FcD0D7d9C3be5C8B049b9f",
+    },
 }
 
 # Velodrome/Aerodrome pool factory addresses per chain.
@@ -160,6 +164,7 @@ AAVE_V3_POOL: dict[str, str] = {
     "base": "0xA238Dd80C259a72e81d7e4664a9801593F98d1c5",
     "optimism": "0x794a61358D6845594F94dc1DB02A252b5b4814aD",
     "polygon": "0x794a61358D6845594F94dc1DB02A252b5b4814aD",
+    "avax": "0x794a61358D6845594F94dc1DB02A252b5b4814aD",
 }
 
 # Minimal ABI for calling executeArbitrage on FlashArbExecutor (v2 with swap types).

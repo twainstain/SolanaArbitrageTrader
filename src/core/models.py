@@ -56,7 +56,7 @@ class OpportunityStatus(str, Enum):
 # Single source of truth — used by wallet, API, discovery, and config.
 SUPPORTED_CHAINS: tuple[str, ...] = (
     "ethereum", "arbitrum", "base", "optimism",
-    "polygon", "bsc", "avalanche",
+    "polygon", "bsc", "avax",
 )
 
 # Fields that should remain as-is (not coerced to Decimal).

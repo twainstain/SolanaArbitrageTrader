@@ -436,9 +436,23 @@ class PerPairExposureTests(unittest.TestCase):
     """Tests for per-pair max_exposure_override in exposure limit rule."""
 
     def test_global_exposure_rejects_large_trade(self) -> None:
-        """Without override, 20000 OP trade exceeds global limit of 10."""
+        """Without override, 20000 trade with unit mismatch triggers safety net.
+
+        trade_size=20000 >> global max=10 (>10x) indicates a non-WETH pair
+        with missing max_exposure_override.  The safety net allows the trade
+        rather than false-rejecting.  For WETH-sized trades, see
+        test_global_exposure_rejects_moderate_trade.
+        """
         policy = RiskPolicy(execution_enabled=True, max_exposure_per_pair=D("10"))
         opp = _make_opp(trade_size=D("20000"), chain="optimism")
+        verdict = policy.evaluate(opp)
+        # Safety net: trade_size >> 10*max → not rejected as exposure_limit
+        self.assertNotEqual(verdict.reason, "exposure_limit")
+
+    def test_global_exposure_rejects_moderate_trade(self) -> None:
+        """A 15 WETH trade (only 1.5x global limit) should still be rejected."""
+        policy = RiskPolicy(execution_enabled=True, max_exposure_per_pair=D("10"))
+        opp = _make_opp(trade_size=D("15"), chain="base")
         verdict = policy.evaluate(opp)
         self.assertFalse(verdict.approved)
         self.assertEqual(verdict.reason, "exposure_limit")

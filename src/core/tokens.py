@@ -89,6 +89,9 @@ class TokenAddresses:
     aave: str | None = None
     crv: str | None = None
     gmx: str | None = None
+    wsteth: str | None = None   # Lido Wrapped Staked ETH
+    cbeth: str | None = None    # Coinbase Wrapped Staked ETH
+    aero: str | None = None     # Aerodrome native token (Base)
 
 
 # Canonical contract addresses per chain.
@@ -103,6 +106,8 @@ CHAIN_TOKENS: dict[str, TokenAddresses] = {
         uni="0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984",
         aave="0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9",
         crv="0xD533a949740bb3306d119CC777fa900bA034cd52",
+        wsteth="0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0",
+        cbeth="0xBe9895146f7AF43049ca1c1AE358B0541Ea49704",
     ),
     "base": TokenAddresses(
         weth="0x4200000000000000000000000000000000000006",
@@ -110,6 +115,9 @@ CHAIN_TOKENS: dict[str, TokenAddresses] = {
         usdt="0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2",
         usdc_e="0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA",  # USDbC (bridged)
         dai="0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb",
+        wsteth="0xc1CBa3fCea344f92D9239c08C0568f6F2F0ee452",
+        cbeth="0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22",
+        aero="0x940181a94A35A4569E4529A3CDfB74e38FD98631",
     ),
     "arbitrum": TokenAddresses(
         weth="0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
@@ -122,6 +130,8 @@ CHAIN_TOKENS: dict[str, TokenAddresses] = {
         gmx="0xfc5A1A6EB076a2C7aD06eD22C90d7E710E35ad0a",
         dai="0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1",
         uni="0xFa7F8980b0f1E64A2062791cc3b0871572f1F7f0",
+        wsteth="0x5979D7b546E38E9Ab8b6eb39E9A02dd5cAe71E09",
+        cbeth="0x1DEBd73E752bEaF79865Fd6446b0c970EaE7732f",
     ),
     # BSC (BNB Chain) — PancakeSwap's primary chain.
     # Primary pairs are WBNB/USDT, not WETH/USDC.
@@ -149,6 +159,7 @@ CHAIN_TOKENS: dict[str, TokenAddresses] = {
         op="0x4200000000000000000000000000000000000042",
         link="0x350a791Bfc2C21F9Ed5d10980Dad2e2638ffa7f6",
         dai="0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1",
+        wsteth="0x1F32b1c2345538c0c6f582fCB022739c4A194Ebb",
     ),
     "avax": TokenAddresses(
         weth="0x49D5c2BdFfac6CE2BFdB6640F4F80f226bc10bAB",
@@ -196,6 +207,9 @@ SYMBOL_TO_ATTR: dict[str, str] = {
     "AAVE": "aave",
     "CRV": "crv",
     "GMX": "gmx",
+    "WSTETH": "wsteth", "wstETH": "wsteth",
+    "CBETH": "cbeth", "cbETH": "cbeth",
+    "AERO": "aero",
     "USDC.E": "usdc_e",
     "USDBC": "usdc_e",
 }

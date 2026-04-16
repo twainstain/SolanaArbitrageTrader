@@ -54,6 +54,9 @@ def _dynamic_slippage_bps(
 class ArbitrageStrategy:
     def __init__(self, config: BotConfig, pairs: list[PairConfig] | None = None) -> None:
         self.config = config
+        # Reference WETH price (in USDC/USDT) for normalising non-WETH pair
+        # profits to ETH.  Updated each scan cycle via update_weth_price().
+        self._weth_price_usd: Decimal = ZERO
         self._pair_configs: dict[str, PairConfig] = {
             config.pair: PairConfig(
                 pair=config.pair,
@@ -65,10 +68,29 @@ class ArbitrageStrategy:
         for pair_cfg in pairs or config.extra_pairs or []:
             self._pair_configs[pair_cfg.pair] = pair_cfg
 
+    def update_weth_price(self, quotes: list[MarketQuote]) -> None:
+        """Update the reference WETH price from WETH/USDC or WETH/USDT quotes.
+
+        Called once per scan cycle before evaluating non-WETH pairs so that
+        net_profit_base is always normalised to ETH.
+        """
+        prices: list[Decimal] = []
+        for q in quotes:
+            if q.pair in ("WETH/USDC", "WETH/USDT") and q.buy_price > ZERO:
+                prices.append(q.buy_price)
+        if prices:
+            prices.sort()
+            self._weth_price_usd = prices[len(prices) // 2]  # median
+
+    @staticmethod
+    def _is_eth_base(symbol: str) -> bool:
+        return symbol.upper() in ("WETH", "ETH")
+
     def find_best_opportunity(self, quotes: list[MarketQuote]) -> Opportunity | None:
         """Return the most profitable cross-DEX opportunity, or None if nothing is actionable."""
         if len(quotes) < 2:
             return None
+        self.update_weth_price(quotes)
 
         # Log price range to surface spread visibility.
         by_pair: dict[str, list[MarketQuote]] = {}
@@ -188,20 +210,40 @@ class ArbitrageStrategy:
             - flash_fee_quote
         )
 
-        # Convert quote-denominated profit (USDC) to base asset (WETH) using
-        # the arithmetic mean of buy and sell prices as a conversion rate.
+        # Convert quote-denominated profit to ETH using a price conversion.
         #
-        # Why arithmetic mean: for small spreads (<5%), arithmetic and geometric
-        # means differ by <0.01%.  For the Camelot 2.2% false positive case,
-        # the difference is $0.25 on a $2300 trade — negligible vs. other
-        # estimation errors (slippage, gas).
+        # For WETH-base pairs (WETH/USDC, WETH/USDT): use the pair's mid-price
+        # as the conversion rate — divide USDC profit by ETH price → ETH.
         #
-        # Limitation: if buy=$2000 and sell=$3000 (50% spread — almost certainly
-        # a data error), the $2500 midpoint introduces ~10% conversion error.
-        # The scanner's 5% spread cap and outlier filter prevent this case.
+        # For non-WETH-base pairs (OP/USDC, AERO/WETH, wstETH/WETH): use a
+        # reference WETH price (updated each scan cycle) so that net_profit_base
+        # is ALWAYS in ETH.  Without this normalisation, an OP/USDC profit of
+        # $370 USDC would become 247 OP (dividing by ~$1.50) and the dashboard
+        # would display "247 ETH" — completely wrong.
+        #
+        # For WETH-quoted pairs (AERO/WETH, wstETH/WETH): net_profit_quote is
+        # already in WETH, so no conversion needed — just subtract gas.
         mid_price = (buy_quote.buy_price + sell_quote.sell_price) / D("2")
         chain_gas = self.config.gas_cost_for_chain(chain)
-        net_profit_base = (net_profit_quote / mid_price) - chain_gas
+
+        if pair_cfg.quote_asset.upper() in ("WETH", "ETH"):
+            # Quote is already WETH — profit is directly in ETH.
+            net_profit_base = net_profit_quote - chain_gas
+        elif self._is_eth_base(pair_cfg.base_asset):
+            # WETH/USDC or WETH/USDT — divide by mid_price (≈ ETH price).
+            net_profit_base = (net_profit_quote / mid_price) - chain_gas
+        elif self._weth_price_usd > ZERO:
+            # Non-WETH base (OP/USDC, ARB/USDC) — normalise to ETH using
+            # the reference WETH price from the current scan cycle.
+            net_profit_base = (net_profit_quote / self._weth_price_usd) - chain_gas
+        else:
+            # Fallback: no WETH reference available, use pair mid-price.
+            # This is wrong for non-WETH pairs but better than crashing.
+            logger.warning(
+                "[strategy] No WETH reference price for %s — profit may be inaccurate",
+                buy_quote.pair,
+            )
+            net_profit_base = (net_profit_quote / mid_price) - chain_gas
 
         is_actionable = net_profit_base > self.config.min_profit_base
         if not is_actionable:

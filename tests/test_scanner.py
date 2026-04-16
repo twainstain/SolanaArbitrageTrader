@@ -223,15 +223,15 @@ class ChainAwareLiquidityFilterTests(unittest.TestCase):
         result = scanner.scan_and_rank(quotes)
         self.assertGreater(len(result.opportunities), 0)
 
-    def test_l2_rejects_50k_liquidity(self) -> None:
-        """$50K pool should still be rejected on L2 (below $100K threshold)."""
+    def test_l2_rejects_below_threshold_liquidity(self) -> None:
+        """$20K pool should be rejected on Arbitrum (below $25K threshold)."""
         config = self._make_chain_config()
         scanner = OpportunityScanner(config)
         quotes = [
             MarketQuote(dex="Uni-Arbitrum", pair="WETH/USDC", buy_price=3001.0,
-                        sell_price=2999.0, fee_bps=0.0, liquidity_usd=50_000),
+                        sell_price=2999.0, fee_bps=0.0, liquidity_usd=20_000),
             MarketQuote(dex="Sushi-Arbitrum", pair="WETH/USDC", buy_price=3081.0,
-                        sell_price=3079.0, fee_bps=0.0, liquidity_usd=50_000),
+                        sell_price=3079.0, fee_bps=0.0, liquidity_usd=20_000),
         ]
         result = scanner.scan_and_rank(quotes)
         self.assertEqual(len(result.opportunities), 0)

@@ -57,10 +57,25 @@ MONITORED_POOLS: dict[str, dict[str, list[str]]] = {
         "WETH/USDT": [
             "0xC31E54c7a869B9FcBEcc14363CF510d1c41fa443",
         ],
+        "cbETH/WETH": [
+            "0x2C936Dd9D2D7c58C565F70F2320E96Ad8f7eF8C2",  # Uniswap V3 0.05%
+        ],
     },
     "base": {
         "WETH/USDC": [
             "0xd0b53D9277642d899DF5C87A3966A349A798F224",
+        ],
+        "wstETH/WETH": [
+            "0x6f4482cBF7b43599078fcb012732e20480015644",  # Uniswap V3 0.05%
+            "0xA6385c73961dd9C58db2EF0c4EB98cE4B60651e8",  # Aerodrome volatile
+        ],
+        "cbETH/WETH": [
+            "0x7B9636266734270DE5bE02544c04E27046903ff8",  # Uniswap V3 0.30%
+            "0x44Ecc644449fC3a9858d2007CaA8CFAa4C561f91",  # Aerodrome volatile
+        ],
+        "AERO/WETH": [
+            "0x9E88239ac8c225e4Fe63c72A4c7fc9D1c9Ef7e24",  # Uniswap V3 0.05%
+            "0x7f670f78B17dEC44d5Ef68a48740b6f8849cc2e6",  # Aerodrome volatile
         ],
     },
     "optimism": {
@@ -72,6 +87,10 @@ MONITORED_POOLS: dict[str, dict[str, list[str]]] = {
         ],
         "WETH/USDT": [
             "0xc858A329Bf053BE78D6239C4A4343B8FbD21472b",  # Uniswap V3 0.05%
+        ],
+        "wstETH/WETH": [
+            "0x4a5a2A152e985078e1A4AA9C3362c412B7dd0a86",  # Uniswap V3 0.05%
+            "0x6dA98Bde0068d10DDD11b468b197eA97D96F96Bc",  # Velodrome volatile
         ],
     },
 }

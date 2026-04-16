@@ -23,9 +23,9 @@ logger = logging.getLogger(__name__)
 D = Decimal
 # Alert threshold for immediate Telegram + Discord notification.
 # Any opportunity with spread >= this triggers a real-time alert.
-# Set to 0.3% to catch all actionable spreads (was 5% — too high,
-# missed most real opportunities which are typically 0.2-1%).
-BIG_WIN_THRESHOLD_PCT = D("0.3")
+# Set to 0.8% — below this, spreads are too thin to be noteworthy
+# and would create alert noise.
+BIG_WIN_THRESHOLD_PCT = D("0.8")
 
 # Intervals in seconds.
 HOURLY_INTERVAL = 3600.0
@@ -259,10 +259,13 @@ class SmartAlerter:
 
     def check_opportunity(self, spread_pct: Decimal, pair: str,
                           buy_dex: str, sell_dex: str, chain: str,
-                          net_profit: float) -> None:
+                          net_profit: float, opp_id: str = "") -> None:
         """Check if an opportunity warrants an immediate alert."""
         if spread_pct < BIG_WIN_THRESHOLD_PCT:
             return
+
+        from alerting.dispatcher import opp_dashboard_url
+        opp_link = opp_dashboard_url(opp_id, self.dashboard_url) if opp_id else self.dashboard_url
 
         msg = (
             f"BIG SPREAD: {pair}\n"
@@ -270,15 +273,17 @@ class SmartAlerter:
             f"Buy: {buy_dex} -> Sell: {sell_dex}\n"
             f"Spread: {float(spread_pct):.2f}%\n"
             f"Net profit: {net_profit:.6f}\n"
-            f"\nDashboard: {self.dashboard_url}"
+            f"\nDashboard: {opp_link}"
         )
         details = {
             "pair": pair, "chain": chain,
             "buy_dex": buy_dex, "sell_dex": sell_dex,
             "spread_pct": f"{float(spread_pct):.2f}%",
             "net_profit": f"{net_profit:.6f}",
-            "dashboard": self.dashboard_url,
+            "dashboard_link": opp_link,
         }
+        if opp_id:
+            details["opp_id"] = opp_id
 
         if self.telegram.configured:
             self.telegram.send("opportunity_found", msg)

@@ -14,6 +14,7 @@ Principle: No trade is better than a bad trade.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import NamedTuple
@@ -21,6 +22,7 @@ from typing import NamedTuple
 from core.models import ZERO, Opportunity, OpportunityStatus as Status
 
 D = Decimal
+logger = logging.getLogger(__name__)
 
 
 class RiskVerdict(NamedTuple):
@@ -232,12 +234,22 @@ class RiskPolicy:
 
         # Rule 7: Exposure limit
         # Use per-pair override when set (essential for non-WETH pairs like
-        # OP/USDC where the global limit of 10 WETH makes no sense).
-        effective_max_exposure = (
-            opportunity.max_exposure_override
-            if opportunity.max_exposure_override > ZERO
-            else self.max_exposure_per_pair
-        )
+        # OP/USDC where the global limit of 10 WETH makes no sense —
+        # trade_size is 20,000 OP but global max is 10 WETH).
+        if opportunity.max_exposure_override > ZERO:
+            effective_max_exposure = opportunity.max_exposure_override
+        elif opportunity.trade_size > self.max_exposure_per_pair * D("10"):
+            # trade_size is >10× the global limit — almost certainly a
+            # non-WETH pair (e.g. 20,000 OP) without an override configured.
+            # Skip exposure check rather than false-reject.
+            logger.warning(
+                "Exposure check skipped for %s: trade_size=%s >> global max=%s "
+                "(missing max_exposure_override?)",
+                opportunity.pair, opportunity.trade_size, self.max_exposure_per_pair,
+            )
+            effective_max_exposure = opportunity.trade_size * D("2")
+        else:
+            effective_max_exposure = self.max_exposure_per_pair
         new_exposure = current_pair_exposure + opportunity.trade_size
         if new_exposure > effective_max_exposure:
             analysis["reason_detail"] = (

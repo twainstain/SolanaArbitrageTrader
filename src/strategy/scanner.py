@@ -117,6 +117,10 @@ class OpportunityScanner:
         if len(quotes) < 2:
             return []
 
+        # Update reference WETH price so non-WETH pairs (OP/USDC, AERO/WETH)
+        # can normalise net_profit_base to ETH.
+        self.strategy.update_weth_price(quotes)
+
         # Pre-compute per-chain medians for same-chain price consistency check.
         _chain_medians = self._compute_chain_medians(quotes)
         # Pre-compute Decimal constants used in the inner loop to avoid

@@ -267,11 +267,14 @@ class CandidatePipeline:
             if not sim_ok:
                 self.repo.update_opportunity_status(opp_id, Status.SIMULATION_FAILED)
                 logger.info("[pipeline] %s simulation failed: %s", opp_id, sim_reason)
+                from alerting.dispatcher import opp_dashboard_url
                 self.dispatcher.alert("simulation_failed",
                     f"Simulation failed: {opportunity.pair}\n"
                     f"Buy: {opportunity.buy_dex} → Sell: {opportunity.sell_dex}\n"
-                    f"Reason: {sim_reason}",
-                    {"pair": opportunity.pair, "reason": sim_reason})
+                    f"Reason: {sim_reason}\n"
+                    f"Dashboard: {opp_dashboard_url(opp_id)}",
+                    {"pair": opportunity.pair, "reason": sim_reason,
+                     "opp_id": opp_id, "dashboard_link": opp_dashboard_url(opp_id)})
                 _timings["simulate_ms"] = (_time.monotonic() - _t3) * 1000
                 _timings["total_ms"] = (_time.monotonic() - _t0) * 1000
                 return PipelineResult(opp_id, Status.SIMULATION_FAILED, sim_reason, timings=_timings)
@@ -342,21 +345,27 @@ class CandidatePipeline:
                     logger.info("[pipeline] %s included: profit=%.6f", opp_id, float(verification.actual_profit_base))
                     self.dispatcher.trade_executed(
                         pair=opportunity.pair, tx_hash=tx_hash,
-                        profit=float(verification.actual_profit_base))
+                        profit=float(verification.actual_profit_base),
+                        opp_id=opp_id, chain=opportunity.chain)
                     return PipelineResult(opp_id, Status.INCLUDED, "success", verification.actual_profit_base, timings=_timings)
                 elif verification.reverted:
                     self.repo.update_opportunity_status(opp_id, Status.REVERTED)
                     logger.info("[pipeline] %s reverted", opp_id)
                     self.dispatcher.trade_reverted(
                         pair=opportunity.pair, tx_hash=tx_hash,
-                        reason="tx_reverted")
+                        reason="tx_reverted",
+                        opp_id=opp_id, chain=opportunity.chain)
                     return PipelineResult(opp_id, Status.REVERTED, "tx_reverted", timings=_timings)
                 else:
                     self.repo.update_opportunity_status(opp_id, Status.NOT_INCLUDED)
                     logger.info("[pipeline] %s not included", opp_id)
+                    from alerting.dispatcher import opp_dashboard_url, tx_explorer_url
                     self.dispatcher.alert("trade_not_included",
-                        f"Trade not included: {opportunity.pair}\nBundle expired",
-                        {"pair": opportunity.pair, "tx_hash": tx_hash})
+                        f"Trade not included: {opportunity.pair}\n"
+                        f"Bundle expired\n"
+                        f"Dashboard: {opp_dashboard_url(opp_id)}",
+                        {"pair": opportunity.pair, "tx_hash": tx_hash,
+                         "opp_id": opp_id, "dashboard_link": opp_dashboard_url(opp_id)})
                     return PipelineResult(opp_id, Status.NOT_INCLUDED, "bundle_expired", timings=_timings)
 
             _timings["submit_ms"] = (_time.monotonic() - _t4) * 1000

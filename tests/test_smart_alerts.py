@@ -407,8 +407,8 @@ class PerChainStatsTests(_AlertTestBase):
 
 
 class ThresholdTests(unittest.TestCase):
-    def test_big_win_threshold_is_0_3_percent(self):
-        self.assertEqual(BIG_WIN_THRESHOLD_PCT, D("0.3"))
+    def test_big_win_threshold_is_0_8_percent(self):
+        self.assertEqual(BIG_WIN_THRESHOLD_PCT, D("0.8"))
 
 
 if __name__ == "__main__":

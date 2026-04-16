@@ -110,6 +110,20 @@ class PairConfig:
             object.__setattr__(self, "max_exposure", D(str(me)))
 
 
+# Per-chain minimum pool TVL (USD) for the scanner liquidity gate.
+# Arbitrum is lower because legitimate WETH/USDT pools on Sushi ($37k)
+# and Camelot ($39k) show 2-5% spreads — worth trading with small size.
+_CHAIN_MIN_LIQUIDITY: dict[str, Decimal] = {
+    "ethereum": D("1000000"),
+    "arbitrum": D("25000"),
+    "base": D("100000"),
+    "optimism": D("100000"),
+    "polygon": D("100000"),
+    "bsc": D("100000"),
+    "avax": D("100000"),
+}
+
+
 @dataclass(frozen=True)
 class BotConfig:
     pair: str
@@ -207,13 +221,13 @@ class BotConfig:
         """Return minimum pool TVL threshold for a chain.
 
         Ethereum mainnet requires $1M TVL — pools below this have high price
-        impact and are mostly false positives.  L2s (Arbitrum, Base, Optimism)
-        have legitimately smaller pools, so we use $100K.
+        impact and are mostly false positives.  L2s have legitimately smaller
+        pools.  Arbitrum uses $25K to capture WETH/USDT on smaller DEXes
+        (Sushi, Camelot) which show consistent 2-5% spreads.
         """
-        _L2_CHAINS = {"arbitrum", "base", "optimism", "polygon", "bsc", "avax"}
-        if chain.lower() in _L2_CHAINS:
-            return D("100000")
-        return D("1000000")
+        return _CHAIN_MIN_LIQUIDITY.get(
+            chain.lower(), D("1000000"),
+        )
 
     def validate(self) -> None:
         """Raise ValueError if any config field is out of acceptable range."""

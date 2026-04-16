@@ -410,11 +410,12 @@ def main() -> None:
             scan_marks=scan_marks,
         )
 
-        # Smart alerting: Telegram for big wins (>5%), hourly email otherwise.
+        # Smart alerting: Telegram for big wins, hourly email otherwise.
         alerter.check_opportunity(
             spread_pct=opp.gross_spread_pct,
             pair=opp.pair, buy_dex=opp.buy_dex, sell_dex=opp.sell_dex,
             chain=opp.chain, net_profit=float(opp.net_profit_base),
+            opp_id=pipeline_result.opp_id if pipeline_result else "",
         )
         alerter.maybe_send_hourly()
 

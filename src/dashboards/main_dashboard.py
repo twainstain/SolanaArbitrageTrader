@@ -4,7 +4,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <html>
 <head>
     <title>Arbitrage Trader Dashboard</title>
-    <meta http-equiv="refresh" content="30">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
@@ -78,6 +77,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         .exec-item { font-size: 12px; }
         .exec-label { color: #8d969e; text-transform: uppercase; font-size: 10px; font-weight: 600; letter-spacing: 0.24px; }
         .exec-value { color: #ffffff; font-family: 'Inter', monospace; }
+        .notification-bar {
+            display: none;
+            position: fixed; top: 0; left: 0; right: 0; z-index: 9999;
+            background: #494fdf; color: #fff; text-align: center;
+            padding: 10px 16px; font-size: 14px; font-weight: 600;
+            cursor: pointer; letter-spacing: 0.16px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        }
+        .notification-bar:hover { background: #3b40b8; }
+        .notification-bar.visible { display: block; }
         @media (max-width: 720px) {
             body { padding: 12px; }
             .grid { grid-template-columns: 1fr; }
@@ -87,6 +96,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </style>
 </head>
 <body>
+    <div id="new-tx-banner" class="notification-bar" onclick="refreshAll()">
+        New transactions detected — click to refresh
+    </div>
     <h1>Arbitrage Trader Dashboard</h1>
 
     <!-- Scanner Controls -->
@@ -204,7 +216,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     const API_BASE = window.location.pathname.split('/dashboard')[0];
 
     const WINDOWS = ['5m','15m','1h','4h','8h','24h','3d','1w','1m'];
-    let currentWindow = '15m';
+    let currentWindow = localStorage.getItem('arb_window') || '5m';
     let selectedChain = '';
     let selectedStatus = '';
     let selectedPair = '';
@@ -273,7 +285,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         customEnd = '';
         document.getElementById('range-start').value = '';
         document.getElementById('range-end').value = '';
-        currentWindow = '15m';
+        currentWindow = '5m';
+        localStorage.setItem('arb_window', '5m');
         loadWindows(); loadOpportunities();
     }
 
@@ -684,6 +697,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         document.getElementById('range-start').value = '';
         document.getElementById('range-end').value = '';
         currentWindow = w;
+        localStorage.setItem('arb_window', w);
         loadWindows(); loadOpportunities(); loadBarChart();
     }
 
@@ -834,6 +848,64 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         } catch(e) { console.warn('Wallet balance load failed:', e); }
     }
 
+    // --- New transaction detection ---
+    let knownOppIds = new Set();
+    let initialLoadDone = false;
+
+    function trackOppIds(opps) {
+        const newIds = opps.map(o => o.opportunity_id);
+        if (!initialLoadDone) {
+            // First load — just record, don't notify
+            knownOppIds = new Set(newIds);
+            initialLoadDone = true;
+            return;
+        }
+        let hasNew = false;
+        for (const id of newIds) {
+            if (!knownOppIds.has(id)) { hasNew = true; break; }
+        }
+        if (hasNew) {
+            document.getElementById('new-tx-banner').classList.add('visible');
+        }
+    }
+
+    async function checkForNewOpps() {
+        try {
+            let url = '/opportunities?limit=50';
+            if (customStart) {
+                url += '&start=' + encodeURIComponent(customStart);
+                if (customEnd) url += '&end=' + encodeURIComponent(customEnd);
+            } else {
+                url += '&window=' + currentWindow;
+            }
+            if (selectedChain) url += '&chain=' + selectedChain;
+            if (selectedStatus) url += '&status=' + selectedStatus;
+            if (selectedPair) url += '&pair=' + selectedPair;
+            const data = await fetchJSON(url);
+            trackOppIds(data);
+        } catch(e) { /* ignore polling errors */ }
+    }
+
+    function refreshAll() {
+        // Hide notification banner and reload all data
+        document.getElementById('new-tx-banner').classList.remove('visible');
+        knownOppIds.clear();
+        initialLoadDone = false;
+        Promise.all([loadStatus(), loadWindows(), loadChains(), loadOpportunities(), loadBarChart(), loadScannerStatus(), loadChainExecStatus()]).then(() => {
+            loadWalletBalance();
+        });
+    }
+
+    // Patch loadOpportunities to track IDs on user-initiated loads
+    const _origLoadOpps = loadOpportunities;
+    loadOpportunities = async function() {
+        await _origLoadOpps();
+        // After a user-initiated reload, update known set and hide banner
+        knownOppIds = new Set(oppData.map(o => o.opportunity_id));
+        initialLoadDone = true;
+        document.getElementById('new-tx-banner').classList.remove('visible');
+    };
+
     async function init() {
         await loadChainFilter();
         await Promise.all([loadStatus(), loadWindows(), loadChains(), loadOpportunities(), loadBarChart(), loadScannerStatus(), loadChainExecStatus()]);
@@ -841,9 +913,17 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         loadWalletBalance();
     }
     init();
-    // Refresh scanner and chain status every 10 seconds.
+
+    // Background polling — preserves user's selected time window
     setInterval(loadScannerStatus, 10000);
     setInterval(loadChainExecStatus, 10000);
+    setInterval(checkForNewOpps, 15000);
+    // Refresh status cards and charts every 30s (replaces old meta-refresh)
+    setInterval(() => {
+        loadStatus();
+        loadBarChart();
+        loadChains();
+    }, 30000);
     </script>
 </body>
 </html>"""

@@ -69,17 +69,52 @@ class DispatcherTests(unittest.TestCase):
         self.assertEqual(b.received[0][0], "opportunity_found")
         self.assertIn("WETH/USDC", b.received[0][1])
 
+    def test_opportunity_found_includes_dashboard_link(self):
+        b = _FakeBackend()
+        d = AlertDispatcher([b])
+        d.opportunity_found("WETH/USDC", "Uni", "Sushi", 0.5, 0.01,
+                            opp_id="opp_abc123", chain="base")
+        msg = b.received[0][1]
+        details = b.received[0][2]
+        self.assertIn("https://arb-trader.yeda-ai.com/opportunity/opp_abc123", msg)
+        self.assertEqual(details["opp_id"], "opp_abc123")
+        self.assertEqual(details["chain"], "base")
+        self.assertIn("dashboard_link", details)
+
     def test_trade_executed_helper(self):
         b = _FakeBackend()
         d = AlertDispatcher([b])
         d.trade_executed("WETH/USDC", "0xabc", 0.004)
         self.assertEqual(b.received[0][0], "trade_executed")
 
+    def test_trade_executed_includes_links(self):
+        b = _FakeBackend()
+        d = AlertDispatcher([b])
+        d.trade_executed("WETH/USDC", "0xabc123", 0.004,
+                         opp_id="opp_def456", chain="arbitrum")
+        msg = b.received[0][1]
+        details = b.received[0][2]
+        self.assertIn("arbiscan.io/tx/0xabc123", msg)
+        self.assertIn("arb-trader.yeda-ai.com/opportunity/opp_def456", msg)
+        self.assertEqual(details["tx_link"], "https://arbiscan.io/tx/0xabc123")
+        self.assertEqual(details["dashboard_link"],
+                         "https://arb-trader.yeda-ai.com/opportunity/opp_def456")
+
     def test_trade_reverted_helper(self):
         b = _FakeBackend()
         d = AlertDispatcher([b])
         d.trade_reverted("WETH/USDC", "0xdef", "slippage")
         self.assertEqual(b.received[0][0], "trade_reverted")
+
+    def test_trade_reverted_includes_links(self):
+        b = _FakeBackend()
+        d = AlertDispatcher([b])
+        d.trade_reverted("WETH/USDC", "0xdef789", "slippage",
+                         opp_id="opp_ghi012", chain="base")
+        msg = b.received[0][1]
+        details = b.received[0][2]
+        self.assertIn("basescan.org/tx/0xdef789", msg)
+        self.assertIn("arb-trader.yeda-ai.com/opportunity/opp_ghi012", msg)
 
     def test_system_error_helper(self):
         b = _FakeBackend()
@@ -232,6 +267,53 @@ class IntegrationTests(unittest.TestCase):
         ])
         count = d.alert("trade_executed", "profit!")
         self.assertEqual(count, 2)  # telegram + discord succeed, gmail skips
+
+
+# ---------------------------------------------------------------
+# URL helper tests
+# ---------------------------------------------------------------
+
+class URLHelperTests(unittest.TestCase):
+    def test_tx_explorer_url_arbitrum(self):
+        from alerting.dispatcher import tx_explorer_url
+        url = tx_explorer_url("arbitrum", "0xabc123")
+        self.assertEqual(url, "https://arbiscan.io/tx/0xabc123")
+
+    def test_tx_explorer_url_base(self):
+        from alerting.dispatcher import tx_explorer_url
+        url = tx_explorer_url("base", "0xdef")
+        self.assertEqual(url, "https://basescan.org/tx/0xdef")
+
+    def test_tx_explorer_url_optimism(self):
+        from alerting.dispatcher import tx_explorer_url
+        url = tx_explorer_url("optimism", "0x123")
+        self.assertEqual(url, "https://optimistic.etherscan.io/tx/0x123")
+
+    def test_tx_explorer_url_unknown_chain_defaults_etherscan(self):
+        from alerting.dispatcher import tx_explorer_url
+        url = tx_explorer_url("solana", "0xfoo")
+        self.assertEqual(url, "https://etherscan.io/tx/0xfoo")
+
+    def test_opp_dashboard_url_default(self):
+        from alerting.dispatcher import opp_dashboard_url
+        url = opp_dashboard_url("opp_abc123")
+        self.assertEqual(url, "https://arb-trader.yeda-ai.com/opportunity/opp_abc123")
+
+    def test_opp_dashboard_url_custom(self):
+        from alerting.dispatcher import opp_dashboard_url
+        url = opp_dashboard_url("opp_xyz", "http://localhost:8000")
+        self.assertEqual(url, "http://localhost:8000/opportunity/opp_xyz")
+
+
+# ---------------------------------------------------------------
+# Smart alerter threshold test
+# ---------------------------------------------------------------
+
+class SmartAlerterThresholdTests(unittest.TestCase):
+    def test_threshold_is_0_8_pct(self):
+        from alerting.smart_alerts import BIG_WIN_THRESHOLD_PCT
+        from decimal import Decimal
+        self.assertEqual(BIG_WIN_THRESHOLD_PCT, Decimal("0.8"))
 
 
 if __name__ == "__main__":

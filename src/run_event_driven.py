@@ -492,6 +492,7 @@ class PipelineConsumer:
                 spread_pct=opp.gross_spread_pct,
                 pair=opp.pair, buy_dex=opp.buy_dex, sell_dex=opp.sell_dex,
                 chain=opp.chain, net_profit=float(opp.net_profit_base),
+                opp_id=result.opp_id,
             )
             self.alerter.maybe_send_hourly()
             self.alerter.maybe_send_daily()

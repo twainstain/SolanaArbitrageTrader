@@ -21,7 +21,7 @@
     "optimism": "live",
     "ethereum": "simulated",
     "base": "live",
-    "polygon": "simulated"
+    "polygon": "live"
   },
   "extra_pairs": [
     {"pair": "WETH/USDT", "base_asset": "WETH", "quote_asset": "USDT", "trade_size": 1.0},

@@ -165,26 +165,105 @@ class ChainExecutorSubmitter:
         return tx_hash_hex, bundle_id, target_block, submission_type
 
 
+class MultiChainSimulator:
+    """Dispatch simulation to the correct per-chain ChainExecutor."""
+
+    def __init__(self, simulators: dict[str, ChainExecutorSimulator]) -> None:
+        self._by_chain = simulators
+
+    def simulate(self, opportunity: Opportunity) -> tuple[bool, str]:
+        chain = opportunity.chain.lower() if opportunity.chain else ""
+        sim = self._by_chain.get(chain)
+        if sim is None:
+            return False, f"no_executor_for_chain:{chain}"
+        return sim.simulate(opportunity)
+
+
+class MultiChainSubmitter:
+    """Dispatch submission to the correct per-chain ChainExecutor."""
+
+    def __init__(self, submitters: dict[str, ChainExecutorSubmitter]) -> None:
+        self._by_chain = submitters
+
+    def submit(self, opportunity: Opportunity) -> tuple[str, str, int, str]:
+        chain = opportunity.chain.lower() if opportunity.chain else ""
+        sub = self._by_chain.get(chain)
+        if sub is None:
+            raise RuntimeError(f"No executor configured for chain '{chain}'")
+        return sub.submit(opportunity)
+
+
+class MultiChainVerifier:
+    """Dispatch verification to the correct per-chain verifier."""
+
+    def __init__(self, verifiers: dict[str, OpportunityAwareVerifier]) -> None:
+        self._by_chain = verifiers
+
+    def verify(self, tx_hash: str) -> VerificationResult:
+        # Try each chain's verifier — the tx_hash is globally unique.
+        for verifier in self._by_chain.values():
+            if tx_hash in verifier._opps_by_tx:
+                return verifier.verify(tx_hash)
+        # Fallback: use first verifier (will likely fail gracefully).
+        first = next(iter(self._by_chain.values()))
+        return first.verify(tx_hash)
+
+
 def build_execution_stack(
     config: BotConfig,
-) -> tuple[ChainExecutorSimulator | None, ChainExecutorSubmitter | None, OpportunityAwareVerifier | None]:
-    """Build live execution adapters when executor env/config are available."""
-    if not (os.environ.get("EXECUTOR_PRIVATE_KEY") and os.environ.get("EXECUTOR_CONTRACT")):
-        logger.info("Live execution stack not configured — missing EXECUTOR_PRIVATE_KEY or EXECUTOR_CONTRACT")
+) -> tuple[MultiChainSimulator | None, MultiChainSubmitter | None, MultiChainVerifier | None]:
+    """Build per-chain execution adapters and wrap in multi-chain dispatchers.
+
+    Creates one ChainExecutor per chain that has:
+      - EXECUTOR_PRIVATE_KEY set
+      - EXECUTOR_CONTRACT or EXECUTOR_CONTRACT_{CHAIN} set
+      - A valid RPC endpoint
+
+    Chains that fail initialization are logged and skipped — the bot can
+    still scan them but won't attempt live execution.
+    """
+    if not os.environ.get("EXECUTOR_PRIVATE_KEY"):
+        logger.info("Live execution stack not configured — missing EXECUTOR_PRIVATE_KEY")
         return None, None, None
 
-    try:
-        from execution.chain_executor import ChainExecutor
+    from execution.chain_executor import ChainExecutor, ChainExecutorError
 
-        executor = ChainExecutor(config)
-        verifier = OpportunityAwareVerifier(executor)
-        simulator = ChainExecutorSimulator(executor)
-        submitter = ChainExecutorSubmitter(executor, verifier=verifier)
-        logger.info("Live execution stack ready: simulator + submitter + verifier wired")
-        return simulator, submitter, verifier
-    except Exception as exc:
-        logger.warning("Live execution stack unavailable: %s", exc)
+    # Collect all chains from config.
+    chains: set[str] = set()
+    for dex in config.dexes:
+        if dex.chain:
+            chains.add(dex.chain.lower())
+
+    simulators: dict[str, ChainExecutorSimulator] = {}
+    submitters: dict[str, ChainExecutorSubmitter] = {}
+    verifiers: dict[str, OpportunityAwareVerifier] = {}
+
+    for chain in sorted(chains):
+        try:
+            executor = ChainExecutor(config, chain=chain)
+            verifier = OpportunityAwareVerifier(executor)
+            simulators[chain] = ChainExecutorSimulator(executor)
+            submitters[chain] = ChainExecutorSubmitter(executor, verifier=verifier)
+            verifiers[chain] = verifier
+            logger.info("Execution stack ready for chain=%s", chain)
+        except ChainExecutorError as exc:
+            logger.info("Execution stack skipped for chain=%s: %s", chain, exc)
+        except Exception as exc:
+            logger.warning("Execution stack failed for chain=%s: %s", chain, exc)
+
+    if not simulators:
+        logger.info("No chains have live execution configured")
         return None, None, None
+
+    logger.info(
+        "Multi-chain execution stack ready: %s",
+        ", ".join(sorted(simulators.keys())),
+    )
+    return (
+        MultiChainSimulator(simulators),
+        MultiChainSubmitter(submitters),
+        MultiChainVerifier(verifiers),
+    )
 
 
 def compute_live_execution_summary(config: BotConfig) -> dict[str, object]:

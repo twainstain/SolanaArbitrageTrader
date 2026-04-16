@@ -115,6 +115,7 @@ SWAP_ROUTERS: dict[str, dict[str, str]] = {
     },
     "base": {
         "uniswap_v3": "0x2626664c2603336E57B271c5C0b26F421741e481",
+        "sushi_v3": "0xFB7eF66a7e61224DD6FcD0D7d9C3be5C8B049b9f",
         "pancakeswap_v3": "0x1b81D678ffb9C0263b24A97847620C99d213eB14",
         "aerodrome": "0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43",
     },
@@ -190,7 +191,7 @@ class ChainExecutor:
     transaction, waits for confirmation, and returns the result.
     """
 
-    def __init__(self, config: BotConfig) -> None:
+    def __init__(self, config: BotConfig, chain: str | None = None) -> None:
         self.config = config
 
         # Read from environment.
@@ -198,7 +199,7 @@ class ChainExecutor:
 
         # Per-chain contract: EXECUTOR_CONTRACT_ARBITRUM, EXECUTOR_CONTRACT_BASE, etc.
         # Falls back to generic EXECUTOR_CONTRACT.
-        chain_key = config.dexes[0].chain or "ethereum"
+        chain_key = chain or config.dexes[0].chain or "ethereum"
         self.contract_address = (
             os.environ.get(f"EXECUTOR_CONTRACT_{chain_key.upper()}", "")
             or os.environ.get("EXECUTOR_CONTRACT", "")
@@ -215,8 +216,8 @@ class ChainExecutor:
                 f"Set EXECUTOR_CONTRACT_{chain_key.upper()} or EXECUTOR_CONTRACT in .env."
             )
 
-        # Determine chain from the first DEX config.
-        self.chain = config.dexes[0].chain or "ethereum"
+        # Use explicit chain or fall back to first DEX config.
+        self.chain = chain_key
         rpc_overrides = get_rpc_overrides()
         rpc_url = rpc_overrides.get(self.chain, PUBLIC_RPC_URLS.get(self.chain, ""))
 
@@ -258,6 +259,15 @@ class ChainExecutor:
             return ExecutionResult(
                 success=False,
                 reason="cross_chain_execution_not_supported",
+                realized_profit_base=ZERO,
+                opportunity=opportunity,
+            )
+        # Safety: reject if opportunity chain doesn't match this executor's chain.
+        opp_chain = opportunity.chain.lower() if opportunity.chain else ""
+        if opp_chain and opp_chain != self.chain.lower():
+            return ExecutionResult(
+                success=False,
+                reason=f"chain_mismatch:executor={self.chain},opportunity={opp_chain}",
                 realized_profit_base=ZERO,
                 opportunity=opportunity,
             )

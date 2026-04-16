@@ -456,14 +456,12 @@ class LiveExecutionStackTests(unittest.TestCase):
         self.assertIsNone(sub)
         self.assertIsNone(ver)
 
-    @unittest.mock.patch("run_event_driven.ChainExecutorSubmitter")
-    @unittest.mock.patch("run_event_driven.OpportunityAwareVerifier")
-    @unittest.mock.patch("run_event_driven.ChainExecutorSimulator")
     @unittest.mock.patch("execution.chain_executor.ChainExecutor")
     def test_build_execution_stack_returns_adapters_when_env_present(
-        self, mock_exec_cls, mock_sim_cls, mock_ver_cls, mock_sub_cls
+        self, mock_exec_cls,
     ):
         from core.config import BotConfig, DexConfig
+        from run_event_driven import MultiChainSimulator, MultiChainSubmitter, MultiChainVerifier
 
         config = BotConfig(
             pair="WETH/USDC", base_asset="WETH", quote_asset="USDC",
@@ -480,13 +478,8 @@ class LiveExecutionStackTests(unittest.TestCase):
         config.validate()
 
         mock_exec = MagicMock()
+        mock_exec.chain = "ethereum"
         mock_exec_cls.return_value = mock_exec
-        mock_sim = MagicMock()
-        mock_sim_cls.return_value = mock_sim
-        mock_ver = MagicMock()
-        mock_ver_cls.return_value = mock_ver
-        mock_sub = MagicMock()
-        mock_sub_cls.return_value = mock_sub
 
         with unittest.mock.patch.dict("os.environ", {
             "EXECUTOR_PRIVATE_KEY": "0x" + "ab" * 32,
@@ -494,9 +487,10 @@ class LiveExecutionStackTests(unittest.TestCase):
         }):
             sim, sub, ver = build_execution_stack(config)
 
-        self.assertIs(sim, mock_sim)
-        self.assertIs(sub, mock_sub)
-        self.assertIs(ver, mock_ver)
+        self.assertIsInstance(sim, MultiChainSimulator)
+        self.assertIsInstance(sub, MultiChainSubmitter)
+        self.assertIsInstance(ver, MultiChainVerifier)
+        self.assertIn("ethereum", sim._by_chain)
 
     def test_compute_live_execution_summary_prefers_arbitrum_target(self):
         from core.config import BotConfig, DexConfig

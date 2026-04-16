@@ -794,5 +794,266 @@ class ResolveFeeTests(unittest.TestCase):
         self.assertEqual(executor._resolve_fee("UnknownDEX"), 3000)
 
 
+class ChainMismatchGuardTests(unittest.TestCase):
+    """ChainExecutor must reject opportunities targeting a different chain."""
+
+    @patch("execution.chain_executor.Web3")
+    def test_rejects_base_opp_on_ethereum_executor(self, mock_web3_cls) -> None:
+        """An Ethereum executor must reject a Base opportunity."""
+        mock_w3 = MagicMock()
+        mock_web3_cls.return_value = mock_w3
+        mock_web3_cls.HTTPProvider = MagicMock()
+        mock_web3_cls.to_checksum_address = lambda x: x
+        mock_w3.eth.account.from_key.return_value = MagicMock(address="0xfake")
+
+        with patch.dict("os.environ", {
+            "EXECUTOR_PRIVATE_KEY": "0x" + "ab" * 32,
+            "EXECUTOR_CONTRACT": "0x" + "cd" * 20,
+        }):
+            executor = ChainExecutor(_make_config())  # chain=ethereum
+            self.assertEqual(executor.chain, "ethereum")
+
+        opp = Opportunity(
+            pair="WETH/USDC", buy_dex="Sushi-Base", sell_dex="Uniswap-Base",
+            trade_size=1.0, cost_to_buy_quote=2200.0,
+            proceeds_from_sell_quote=2210.0, gross_profit_quote=10.0,
+            net_profit_quote=8.0, net_profit_base=0.004,
+            chain="base",
+        )
+        result = executor.execute(opp)
+        self.assertFalse(result.success)
+        self.assertIn("chain_mismatch", result.reason)
+
+    @patch("execution.chain_executor.Web3")
+    def test_accepts_matching_chain(self, mock_web3_cls) -> None:
+        """Ethereum executor should NOT reject an Ethereum opportunity."""
+        mock_w3 = MagicMock()
+        mock_web3_cls.return_value = mock_w3
+        mock_web3_cls.HTTPProvider = MagicMock()
+        mock_web3_cls.to_checksum_address = lambda x: x
+        mock_w3.eth.account.from_key.return_value = MagicMock(address="0xfake")
+        mock_w3.eth.call.side_effect = Exception("revert for test")
+
+        with patch.dict("os.environ", {
+            "EXECUTOR_PRIVATE_KEY": "0x" + "ab" * 32,
+            "EXECUTOR_CONTRACT": "0x" + "cd" * 20,
+        }):
+            executor = ChainExecutor(_make_config())
+
+        opp = Opportunity(
+            pair="WETH/USDC", buy_dex="Uniswap", sell_dex="PancakeSwap",
+            trade_size=1.0, cost_to_buy_quote=2200.0,
+            proceeds_from_sell_quote=2210.0, gross_profit_quote=10.0,
+            net_profit_quote=8.0, net_profit_base=0.004,
+            chain="ethereum",
+        )
+        result = executor.execute(opp)
+        # Won't be chain_mismatch — will fail at simulation (expected)
+        self.assertNotIn("chain_mismatch", result.reason)
+
+    @patch("execution.chain_executor.Web3")
+    def test_explicit_chain_param(self, mock_web3_cls) -> None:
+        """ChainExecutor(config, chain='base') should use Base chain."""
+        mock_w3 = MagicMock()
+        mock_web3_cls.return_value = mock_w3
+        mock_web3_cls.HTTPProvider = MagicMock()
+        mock_web3_cls.to_checksum_address = lambda x: x
+        mock_w3.eth.account.from_key.return_value = MagicMock(address="0xfake")
+
+        with patch.dict("os.environ", {
+            "EXECUTOR_PRIVATE_KEY": "0x" + "ab" * 32,
+            "EXECUTOR_CONTRACT_BASE": "0x" + "ee" * 20,
+        }):
+            executor = ChainExecutor(_make_config(), chain="base")
+            self.assertEqual(executor.chain, "base")
+            self.assertEqual(executor.contract_address, "0x" + "ee" * 20)
+
+
+class ExplicitChainParamTests(unittest.TestCase):
+    """ChainExecutor should accept an explicit chain parameter."""
+
+    @patch("execution.chain_executor.Web3")
+    def test_chain_param_overrides_config(self, mock_web3_cls) -> None:
+        mock_w3 = MagicMock()
+        mock_web3_cls.return_value = mock_w3
+        mock_web3_cls.HTTPProvider = MagicMock()
+        mock_web3_cls.to_checksum_address = lambda x: x
+        mock_w3.eth.account.from_key.return_value = MagicMock(address="0xfake")
+
+        with patch.dict("os.environ", {
+            "EXECUTOR_PRIVATE_KEY": "0x" + "ab" * 32,
+            "EXECUTOR_CONTRACT_ARBITRUM": "0x" + "ff" * 20,
+        }):
+            # Config has ethereum dexes, but chain="arbitrum" is explicit
+            executor = ChainExecutor(_make_config(), chain="arbitrum")
+            self.assertEqual(executor.chain, "arbitrum")
+            self.assertFalse(executor.use_flashbots)  # Arbitrum = no flashbots
+
+    @patch("execution.chain_executor.Web3")
+    def test_chain_param_none_uses_config(self, mock_web3_cls) -> None:
+        mock_w3 = MagicMock()
+        mock_web3_cls.return_value = mock_w3
+        mock_web3_cls.HTTPProvider = MagicMock()
+        mock_web3_cls.to_checksum_address = lambda x: x
+        mock_w3.eth.account.from_key.return_value = MagicMock(address="0xfake")
+
+        with patch.dict("os.environ", {
+            "EXECUTOR_PRIVATE_KEY": "0x" + "ab" * 32,
+            "EXECUTOR_CONTRACT": "0x" + "cd" * 20,
+        }):
+            executor = ChainExecutor(_make_config(), chain=None)
+            self.assertEqual(executor.chain, "ethereum")
+
+
+class BaseChainRouterTests(unittest.TestCase):
+    """Sushi V3 router must be present for Base chain."""
+
+    def test_base_has_sushi_v3_router(self) -> None:
+        routers = SWAP_ROUTERS.get("base", {})
+        self.assertIn("sushi_v3", routers)
+        self.assertTrue(routers["sushi_v3"].startswith("0x"))
+        self.assertEqual(len(routers["sushi_v3"]), 42)
+
+    def test_all_chains_have_expected_dex_types(self) -> None:
+        """Each chain with sushi_v3 quoter should also have sushi_v3 router."""
+        chains_with_sushi_quoter = {"ethereum", "arbitrum", "base", "optimism"}
+        for chain in chains_with_sushi_quoter:
+            routers = SWAP_ROUTERS.get(chain, {})
+            if chain != "base":  # Base was just added
+                self.assertIn("sushi_v3", routers, f"Missing sushi_v3 router for {chain}")
+
+
+class MultiChainDispatchTests(unittest.TestCase):
+    """Tests for MultiChainSimulator / MultiChainSubmitter dispatch."""
+
+    def test_simulator_dispatches_to_correct_chain(self) -> None:
+        from run_event_driven import MultiChainSimulator, ChainExecutorSimulator
+
+        mock_arb_sim = MagicMock(spec=ChainExecutorSimulator)
+        mock_arb_sim.simulate.return_value = (True, "ok")
+        mock_base_sim = MagicMock(spec=ChainExecutorSimulator)
+        mock_base_sim.simulate.return_value = (False, "revert")
+
+        multi = MultiChainSimulator({"arbitrum": mock_arb_sim, "base": mock_base_sim})
+
+        arb_opp = Opportunity(
+            pair="WETH/USDC", buy_dex="Uni-Arb", sell_dex="Sushi-Arb",
+            trade_size=1.0, cost_to_buy_quote=2200.0,
+            proceeds_from_sell_quote=2210.0, gross_profit_quote=10.0,
+            net_profit_quote=8.0, net_profit_base=0.004,
+            chain="arbitrum",
+        )
+        ok, reason = multi.simulate(arb_opp)
+        self.assertTrue(ok)
+        mock_arb_sim.simulate.assert_called_once_with(arb_opp)
+        mock_base_sim.simulate.assert_not_called()
+
+    def test_simulator_returns_error_for_unknown_chain(self) -> None:
+        from run_event_driven import MultiChainSimulator
+
+        multi = MultiChainSimulator({"arbitrum": MagicMock()})
+
+        opp = Opportunity(
+            pair="WETH/USDC", buy_dex="Uni", sell_dex="Sushi",
+            trade_size=1.0, cost_to_buy_quote=2200.0,
+            proceeds_from_sell_quote=2210.0, gross_profit_quote=10.0,
+            net_profit_quote=8.0, net_profit_base=0.004,
+            chain="polygon",
+        )
+        ok, reason = multi.simulate(opp)
+        self.assertFalse(ok)
+        self.assertIn("no_executor_for_chain", reason)
+
+    def test_submitter_dispatches_to_correct_chain(self) -> None:
+        from run_event_driven import MultiChainSubmitter, ChainExecutorSubmitter
+
+        mock_base_sub = MagicMock(spec=ChainExecutorSubmitter)
+        mock_base_sub.submit.return_value = ("0xhash", "", 0, "public")
+
+        multi = MultiChainSubmitter({"base": mock_base_sub})
+
+        opp = Opportunity(
+            pair="WETH/USDC", buy_dex="Sushi-Base", sell_dex="Uni-Base",
+            trade_size=1.0, cost_to_buy_quote=2200.0,
+            proceeds_from_sell_quote=2210.0, gross_profit_quote=10.0,
+            net_profit_quote=8.0, net_profit_base=0.004,
+            chain="base",
+        )
+        result = multi.submit(opp)
+        self.assertEqual(result[0], "0xhash")
+        mock_base_sub.submit.assert_called_once()
+
+    def test_submitter_raises_for_unknown_chain(self) -> None:
+        from run_event_driven import MultiChainSubmitter
+
+        multi = MultiChainSubmitter({"arbitrum": MagicMock()})
+
+        opp = Opportunity(
+            pair="WETH/USDC", buy_dex="Uni", sell_dex="Sushi",
+            trade_size=1.0, cost_to_buy_quote=2200.0,
+            proceeds_from_sell_quote=2210.0, gross_profit_quote=10.0,
+            net_profit_quote=8.0, net_profit_base=0.004,
+            chain="optimism",
+        )
+        with self.assertRaises(RuntimeError):
+            multi.submit(opp)
+
+    def test_build_execution_stack_creates_per_chain(self) -> None:
+        """build_execution_stack should create executors for chains with contracts."""
+        from run_event_driven import build_execution_stack, MultiChainSimulator
+
+        config = BotConfig(
+            pair="WETH/USDC", base_asset="WETH", quote_asset="USDC",
+            trade_size=1.0, min_profit_base=0.001, estimated_gas_cost_base=0.002,
+            flash_loan_fee_bps=9.0, flash_loan_provider="aave_v3",
+            slippage_bps=15.0, poll_interval_seconds=0.0,
+            dexes=[
+                DexConfig(name="Uni-Arb", base_price=0, fee_bps=5.0,
+                          volatility_bps=0, chain="arbitrum", dex_type="uniswap_v3"),
+                DexConfig(name="Sushi-Arb", base_price=0, fee_bps=30.0,
+                          volatility_bps=0, chain="arbitrum", dex_type="sushi_v3"),
+                DexConfig(name="Uni-Base", base_price=0, fee_bps=5.0,
+                          volatility_bps=0, chain="base", dex_type="uniswap_v3"),
+                DexConfig(name="Uni-Eth", base_price=0, fee_bps=5.0,
+                          volatility_bps=0, chain="ethereum", dex_type="uniswap_v3"),
+            ],
+        )
+        config.validate()
+
+        with patch("execution.chain_executor.ChainExecutor") as MockExecutor:
+            # Arbitrum and Base succeed, Ethereum fails (no contract)
+            def side_effect(cfg, chain=None):
+                if chain == "ethereum":
+                    raise ChainExecutorError("no contract")
+                mock_exec = MagicMock()
+                mock_exec.chain = chain
+                return mock_exec
+
+            MockExecutor.side_effect = side_effect
+            MockExecutor.__name__ = "ChainExecutor"
+
+            with patch.dict("os.environ", {
+                "EXECUTOR_PRIVATE_KEY": "0x" + "ab" * 32,
+                "EXECUTOR_CONTRACT": "0x" + "cd" * 20,
+            }):
+                sim, sub, ver = build_execution_stack(config)
+
+            self.assertIsNotNone(sim)
+            self.assertIsInstance(sim, MultiChainSimulator)
+            # Should have arbitrum and base, not ethereum
+            self.assertIn("arbitrum", sim._by_chain)
+            self.assertIn("base", sim._by_chain)
+            self.assertNotIn("ethereum", sim._by_chain)
+
+    def test_build_execution_stack_returns_none_without_key(self) -> None:
+        from run_event_driven import build_execution_stack
+
+        with patch.dict("os.environ", {"EXECUTOR_PRIVATE_KEY": ""}, clear=False):
+            sim, sub, ver = build_execution_stack(_make_config())
+            self.assertIsNone(sim)
+            self.assertIsNone(sub)
+            self.assertIsNone(ver)
+
+
 if __name__ == "__main__":
     unittest.main()

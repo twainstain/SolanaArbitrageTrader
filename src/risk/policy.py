@@ -48,6 +48,23 @@ CHAIN_MIN_SPREAD_PCT: dict[str, Decimal] = {
     "avax": D("0.25"),
 }
 
+# Per-chain minimum net profit thresholds (in base asset, e.g. WETH).
+#
+# Ethereum gas is ~$2-5 per tx, so profit must cover that → 0.005 WETH (~$12).
+# L2s have gas ~$0.01-0.10, so micro-opportunities down to ~$0.50 are viable.
+#
+# These are calibrated to each chain's gas cost + a safety margin:
+#   threshold ≈ 2 × typical_gas_cost (covers gas variance and slippage error)
+CHAIN_MIN_NET_PROFIT: dict[str, Decimal] = {
+    "ethereum": D("0.005"),   # ~$12 — high gas needs big profit
+    "arbitrum": D("0.0002"),  # ~$0.50 — very cheap gas
+    "base": D("0.0002"),      # ~$0.50 — very cheap gas
+    "optimism": D("0.0002"),  # ~$0.50 — very cheap gas
+    "polygon": D("0.0003"),   # ~$0.70 — cheap gas, slightly higher variance
+    "bsc": D("0.0003"),       # ~$0.70
+    "avax": D("0.0005"),      # ~$1.20 — moderate gas
+}
+
 
 @dataclass
 class RiskPolicy:
@@ -55,9 +72,12 @@ class RiskPolicy:
 
     Each rule is a threshold. An opportunity must pass ALL rules to be approved.
     """
-    # Minimum net profit in base asset.
-    # Production: 0.005 WETH (~$10). Testing: 0.0005 (~$1).
+    # Default minimum net profit in base asset (used when chain not in override map).
+    # Production default: 0.005 WETH (~$12).
     min_net_profit: Decimal = D("0.005")
+
+    # Per-chain net profit overrides.  L2s with cheap gas can capture smaller profits.
+    chain_min_net_profit: dict = field(default_factory=lambda: dict(CHAIN_MIN_NET_PROFIT))
 
     # Default minimum spread percentage (used when chain not in override map).
     min_spread_pct: Decimal = D("0.40")
@@ -158,16 +178,20 @@ class RiskPolicy:
             analysis["chain_min_spread"] = str(effective_min_spread)
             return RiskVerdict(False, "below_min_spread", analysis)
 
-        # Rule 2b: Minimum net profit
-        if opportunity.net_profit_base < self.min_net_profit:
+        # Rule 2b: Minimum net profit (per-chain threshold)
+        # L2s with cheap gas can capture smaller profits than Ethereum.
+        effective_min_profit = self.chain_min_net_profit.get(chain, self.min_net_profit)
+        if opportunity.net_profit_base < effective_min_profit:
             analysis["reason_detail"] = (
-                f"Net profit {opportunity.net_profit_base} is below minimum {self.min_net_profit}. "
+                f"Net profit {opportunity.net_profit_base} is below minimum "
+                f"{effective_min_profit} for {chain or 'default'}. "
                 f"Costs: DEX fees={opportunity.dex_fee_cost_quote}, "
                 f"flash={opportunity.flash_loan_fee_quote}, "
                 f"slippage={opportunity.slippage_cost_quote}, "
                 f"gas={opportunity.gas_cost_base}."
             )
-            analysis["required"] = str(self.min_net_profit)
+            analysis["required"] = str(effective_min_profit)
+            analysis["chain_min_profit"] = str(effective_min_profit)
             return RiskVerdict(False, "below_min_profit", analysis)
 
         # Rule 3: Warning flags
@@ -246,7 +270,8 @@ class RiskPolicy:
     def to_dict(self) -> dict:
         """Serialize the current policy for logging/API."""
         return {
-            "min_net_profit": str(self.min_net_profit),
+            "min_net_profit_default": str(self.min_net_profit),
+            "chain_min_net_profit": {k: str(v) for k, v in self.chain_min_net_profit.items()},
             "min_spread_pct_default": str(self.min_spread_pct),
             "chain_min_spread_pct": {k: str(v) for k, v in self.chain_min_spread_pct.items()},
             "max_slippage_bps": str(self.max_slippage_bps),

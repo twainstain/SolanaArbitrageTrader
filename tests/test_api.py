@@ -163,7 +163,7 @@ class RiskPolicyTests(_APITestBase):
         resp = self.client.get("/risk/policy")
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
-        self.assertIn("min_net_profit", data)
+        self.assertIn("min_net_profit_default", data)
         self.assertIn("max_trades_per_hour", data)
 
 

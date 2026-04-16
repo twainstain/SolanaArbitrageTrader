@@ -354,7 +354,7 @@ class ToDictTests(unittest.TestCase):
     def test_serializes_all_fields(self) -> None:
         policy = RiskPolicy()
         d = policy.to_dict()
-        self.assertIn("min_net_profit", d)
+        self.assertIn("min_net_profit_default", d)
         self.assertIn("min_spread_pct_default", d)
         self.assertIn("chain_min_spread_pct", d)
         self.assertIn("execution_enabled", d)
@@ -364,12 +364,72 @@ class ToDictTests(unittest.TestCase):
         # Chain overrides should be serialized
         self.assertIn("ethereum", d["chain_min_spread_pct"])
         self.assertIn("arbitrum", d["chain_min_spread_pct"])
+        # Per-chain profit thresholds
+        self.assertIn("chain_min_net_profit", d)
+        self.assertIn("ethereum", d["chain_min_net_profit"])
+        self.assertIn("arbitrum", d["chain_min_net_profit"])
 
     def test_chain_execution_mode_in_dict(self) -> None:
         policy = RiskPolicy()
         policy.set_chain_mode("arbitrum", "live")
         d = policy.to_dict()
         self.assertEqual(d["chain_execution_mode"]["arbitrum"], "live")
+
+
+class PerChainMinProfitTests(unittest.TestCase):
+    """Tests for per-chain minimum net profit thresholds."""
+
+    def test_ethereum_uses_high_threshold(self):
+        """Ethereum min profit is 0.005 WETH — reject 0.001."""
+        policy = RiskPolicy(execution_enabled=True)
+        opp = _make_opp(chain="ethereum", net_profit_base=D("0.001"))
+        verdict = policy.evaluate(opp)
+        self.assertFalse(verdict.approved)
+        self.assertEqual(verdict.reason, "below_min_profit")
+
+    def test_arbitrum_uses_low_threshold(self):
+        """Arbitrum min profit is 0.0002 WETH — accept 0.001."""
+        policy = RiskPolicy(execution_enabled=True)
+        opp = _make_opp(chain="arbitrum", net_profit_base=D("0.001"))
+        verdict = policy.evaluate(opp)
+        # Should NOT be rejected for below_min_profit.
+        if not verdict.approved:
+            self.assertNotEqual(verdict.reason, "below_min_profit")
+
+    def test_arbitrum_rejects_below_its_threshold(self):
+        """Arbitrum min is 0.0002 — reject 0.0001."""
+        policy = RiskPolicy(execution_enabled=True)
+        opp = _make_opp(chain="arbitrum", net_profit_base=D("0.0001"))
+        verdict = policy.evaluate(opp)
+        self.assertFalse(verdict.approved)
+        self.assertEqual(verdict.reason, "below_min_profit")
+
+    def test_base_uses_low_threshold(self):
+        """Base min profit is 0.0002 WETH — accept 0.0005."""
+        policy = RiskPolicy(execution_enabled=True)
+        opp = _make_opp(chain="base", net_profit_base=D("0.0005"))
+        verdict = policy.evaluate(opp)
+        if not verdict.approved:
+            self.assertNotEqual(verdict.reason, "below_min_profit")
+
+    def test_unknown_chain_uses_default(self):
+        """Unknown chain falls back to default 0.005 WETH."""
+        policy = RiskPolicy(execution_enabled=True)
+        opp = _make_opp(chain="unknown_chain", net_profit_base=D("0.001"))
+        verdict = policy.evaluate(opp)
+        self.assertFalse(verdict.approved)
+        self.assertEqual(verdict.reason, "below_min_profit")
+
+    def test_custom_chain_profit_override(self):
+        """Custom per-chain threshold can be set."""
+        policy = RiskPolicy(
+            execution_enabled=True,
+            chain_min_net_profit={"testchain": D("0.01")},
+        )
+        opp = _make_opp(chain="testchain", net_profit_base=D("0.005"))
+        verdict = policy.evaluate(opp)
+        self.assertFalse(verdict.approved)
+        self.assertEqual(verdict.reason, "below_min_profit")
 
 
 if __name__ == "__main__":

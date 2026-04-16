@@ -749,7 +749,7 @@ class OpsAPIEndpointTests(_DashboardTestBase):
         resp = self.client.get("/risk/policy")
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
-        self.assertIn("min_net_profit", data)
+        self.assertIn("min_net_profit_default", data)
         self.assertIn("min_spread_pct_default", data)
         self.assertIn("max_slippage_bps", data)
         self.assertIn("execution_enabled", data)

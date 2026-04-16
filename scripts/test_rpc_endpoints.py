@@ -22,8 +22,8 @@ from pathlib import Path
 # Add src to path so we can import project modules.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from env import load_env, get_rpc_overrides
-from contracts import PUBLIC_RPC_URLS
+from core.env import load_env, get_rpc_overrides
+from core.contracts import PUBLIC_RPC_URLS
 
 load_env()
 

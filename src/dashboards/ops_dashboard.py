@@ -257,12 +257,12 @@ OPS_DASHBOARD_HTML = """<!DOCTYPE html>
         grid.innerHTML = `
             <div class="card">
                 <div class="card-title">Min Net Profit</div>
-                <div class="card-value">${Number(r.min_net_profit).toFixed(4)} ETH</div>
-                <div class="card-sub">~$${(Number(r.min_net_profit) * 2300).toFixed(2)}</div>
+                <div class="card-value">${Number(r.min_net_profit_default).toFixed(4)} ETH</div>
+                <div class="card-sub">~$${(Number(r.min_net_profit_default) * 2300).toFixed(2)}</div>
             </div>
             <div class="card">
                 <div class="card-title">Min Spread</div>
-                <div class="card-value">${r.min_spread_pct}%</div>
+                <div class="card-value">${r.min_spread_pct_default}%</div>
             </div>
             <div class="card">
                 <div class="card-title">Max Slippage</div>
@@ -290,5 +290,4 @@ OPS_DASHBOARD_HTML = """<!DOCTYPE html>
     </script>
 </body>
 </html>"""
-
 

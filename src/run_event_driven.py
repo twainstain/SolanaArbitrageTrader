@@ -77,6 +77,37 @@ def _build_pair_list(config: BotConfig) -> list[PairConfig]:
     return pairs
 
 
+def build_risk_policy(config: BotConfig) -> RiskPolicy:
+    """Build a risk policy whose profit floors match the active config.
+
+    The execution pipeline and on-chain contract must agree on the minimum
+    profitable trade size. If the risk layer approves opportunities below
+    ``config.min_profit_base``, the contract will still reject them via its
+    ``minProfit`` check and we burn gas on avoidable reverts.
+
+    To keep approval and execution aligned, every chain present in the loaded
+    config inherits the config's ``min_profit_base`` as its minimum net profit.
+    Unconfigured chains retain the broader library defaults.
+    """
+    configured_chains = {
+        (dex.chain or "").lower() for dex in config.dexes if dex.chain
+    }
+    configured_chains.update(
+        (pair.chain or "").lower() for pair in (config.extra_pairs or []) if pair.chain
+    )
+
+    chain_min_profit = {
+        **RiskPolicy().chain_min_net_profit,
+        **{chain: config.min_profit_base for chain in configured_chains if chain},
+    }
+    return RiskPolicy(
+        execution_enabled=False,  # global default; per-chain modes override
+        min_net_profit=config.min_profit_base,
+        chain_min_net_profit=chain_min_profit,
+        chain_execution_mode=dict(config.chain_execution_mode or {}),
+    )
+
+
 class ChainExecutorSimulator:
     """Pipeline simulator adapter backed by ChainExecutor's eth_call preflight."""
 
@@ -617,11 +648,7 @@ def main() -> None:
     # --- Risk ---
     chain_modes = config.chain_execution_mode or {}
     any_live = any(m == "live" for m in chain_modes.values())
-    risk_policy = RiskPolicy(
-        execution_enabled=False,  # global default; per-chain modes override
-        min_net_profit=0.0005,    # low for testing (~$1). Production: 0.005 (~$10)
-        chain_execution_mode=dict(chain_modes),
-    )
+    risk_policy = build_risk_policy(config)
     if chain_modes:
         logger.info("Chain execution modes from config: %s", chain_modes)
     breaker = CircuitBreaker(CircuitBreakerConfig(

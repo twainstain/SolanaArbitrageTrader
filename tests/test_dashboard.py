@@ -754,6 +754,12 @@ class OpsAPIEndpointTests(_DashboardTestBase):
         self.assertIn("max_slippage_bps", data)
         self.assertIn("execution_enabled", data)
 
+    def test_ops_dashboard_uses_current_risk_policy_field_names(self):
+        resp = self.client.get("/ops")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("min_net_profit_default", resp.text)
+        self.assertIn("min_spread_pct_default", resp.text)
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Scanner & Execution Control Tests
@@ -865,4 +871,3 @@ class OpportunityFullTests(_DashboardTestBase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -20,6 +20,7 @@ from risk.circuit_breaker import CircuitBreaker, CircuitBreakerConfig
 from risk.policy import RiskPolicy
 from run_event_driven import (
     assess_launch_readiness,
+    build_risk_policy,
     build_execution_stack,
     compute_live_execution_summary,
     enforce_safe_execution_mode,
@@ -258,6 +259,70 @@ class EndToEndFlowTests(unittest.TestCase):
         self.assertTrue(queue.is_empty)
         stats = queue.stats()
         self.assertEqual(stats["total_enqueued"], 3)
+
+
+class RiskPolicyBuilderTests(unittest.TestCase):
+    def test_build_risk_policy_uses_config_min_profit_for_configured_chain(self):
+        from core.config import BotConfig, DexConfig
+
+        config = BotConfig(
+            pair="WETH/USDC",
+            dexes=[
+                DexConfig(
+                    name="Uniswap-Arbitrum",
+                    base_price=D("0"),
+                    fee_bps=D("5"),
+                    volatility_bps=D("0"),
+                    chain="arbitrum",
+                    dex_type="uniswap_v3",
+                )
+            ],
+            base_asset="WETH",
+            quote_asset="USDC",
+            trade_size=D("1"),
+            min_profit_base=D("0.005"),
+            estimated_gas_cost_base=D("0.0002"),
+            flash_loan_fee_bps=D("9"),
+            flash_loan_provider="aave_v3",
+            slippage_bps=D("15"),
+            poll_interval_seconds=8.0,
+            chain_execution_mode={"arbitrum": "live"},
+        )
+
+        policy = build_risk_policy(config)
+        self.assertEqual(policy.min_net_profit, D("0.005"))
+        self.assertEqual(policy.chain_min_net_profit["arbitrum"], D("0.005"))
+
+    def test_build_risk_policy_keeps_defaults_for_unconfigured_chains(self):
+        from core.config import BotConfig, DexConfig
+
+        config = BotConfig(
+            pair="WETH/USDC",
+            dexes=[
+                DexConfig(
+                    name="Uniswap-Arbitrum",
+                    base_price=D("0"),
+                    fee_bps=D("5"),
+                    volatility_bps=D("0"),
+                    chain="arbitrum",
+                    dex_type="uniswap_v3",
+                )
+            ],
+            base_asset="WETH",
+            quote_asset="USDC",
+            trade_size=D("1"),
+            min_profit_base=D("0.005"),
+            estimated_gas_cost_base=D("0.0002"),
+            flash_loan_fee_bps=D("9"),
+            flash_loan_provider="aave_v3",
+            slippage_bps=D("15"),
+            poll_interval_seconds=8.0,
+            chain_execution_mode={"arbitrum": "live"},
+        )
+
+        policy = build_risk_policy(config)
+        self.assertEqual(policy.chain_min_net_profit["arbitrum"], D("0.005"))
+        self.assertEqual(policy.chain_min_net_profit["optimism"], D("0.0002"))
 
 
 class CrossChainFilterTests(unittest.TestCase):

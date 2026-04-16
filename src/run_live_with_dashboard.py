@@ -155,10 +155,9 @@ def main() -> None:
     metrics = MetricsCollector()
 
     # --- Risk policy (dry-run: execution disabled) ---
-    risk_policy = RiskPolicy(
-        execution_enabled=False,  # dry-run: detect + price + risk, don't execute
-        min_net_profit=0.0005,  # low for testing (~$1). Production: 0.005 (~$10)
-    )
+    from run_event_driven import build_risk_policy
+
+    risk_policy = build_risk_policy(config)
 
     # --- Pipeline (dispatcher wired after alerting init below) ---
     pipeline = None  # initialized after dispatcher

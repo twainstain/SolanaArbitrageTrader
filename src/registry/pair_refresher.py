@@ -62,7 +62,7 @@ class PairRefresher:
     ) -> None:
         self.chains = chains or [
             "ethereum", "arbitrum", "base", "polygon",
-            "optimism", "bsc", "avalanche",
+            "optimism", "bsc", "avax",
         ]
         self.min_volume = min_volume
         self.min_dex_count = min_dex_count

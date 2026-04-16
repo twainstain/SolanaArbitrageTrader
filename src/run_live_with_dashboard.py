@@ -129,7 +129,7 @@ def main() -> None:
         from core.config import PairConfig
         logger.info("Running pair discovery (sort by volume, multi-exchange, ERC-20)...")
         discovered = discover_best_pairs(
-            chains=["ethereum", "arbitrum", "base", "polygon", "optimism", "avalanche"],
+            chains=["ethereum", "arbitrum", "base", "polygon", "optimism", "avax"],
             min_volume=100_000,
             min_dex_count=2,
             max_results=15,

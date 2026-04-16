@@ -818,7 +818,7 @@ def main() -> None:
     # --- Auto-discover top pairs by volume/liquidity ---
     from registry.pair_refresher import PairRefresher
     pair_refresher = PairRefresher(
-        chains=["ethereum", "arbitrum", "base", "polygon", "optimism", "bsc", "avalanche"],
+        chains=["ethereum", "arbitrum", "base", "polygon", "optimism", "bsc", "avax"],
         min_volume=100_000,
         min_dex_count=2,
         max_results=15,

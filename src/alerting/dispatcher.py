@@ -1,23 +1,25 @@
-"""Alert dispatcher — routes structured alert events to all configured backends.
+"""Alert dispatcher — ArbitrageTrader extension of trading_platform's AlertDispatcher.
 
-Alert events:
-  - opportunity_found
-  - trade_executed
-  - trade_reverted
-  - trade_not_included
-  - simulation_failed
-  - system_error
-  - daily_summary
+Adds arbitrage-specific convenience methods and helper functions on top
+of the generic fan-out dispatcher from the shared platform.
 
-Each backend receives the same (event_type, message, details) and decides
-how to format and deliver it. Backends that fail are logged but don't
-crash the bot.
+The base class (trading_platform.alerting.AlertDispatcher) provides:
+  - add_backend(), alert(), backend_count
+
+This module adds:
+  - opportunity_found(), trade_executed(), trade_reverted()
+  - daily_summary(), system_error()
+  - tx_explorer_url(), opp_dashboard_url() helpers
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Protocol
+
+from trading_platform.alerting.dispatcher import (
+    AlertBackend,
+    AlertDispatcher as _PlatformDispatcher,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,32 +51,28 @@ def opp_dashboard_url(opp_id: str, dashboard_url: str = DEFAULT_DASHBOARD_URL) -
     return f"{dashboard_url}/opportunity/{opp_id}"
 
 
-class AlertBackend(Protocol):
-    """Protocol that all alert backends must satisfy."""
+class AlertDispatcher(_PlatformDispatcher):
+    """ArbitrageTrader alert dispatcher with domain-specific convenience methods.
 
-    @property
-    def name(self) -> str: ...
-
-    def send(self, event_type: str, message: str, details: dict | None = None) -> bool:
-        """Send an alert. Returns True if delivered successfully."""
-        ...
-
-
-class AlertDispatcher:
-    """Fan-out alerts to all registered backends.
-
-    Failures in one backend don't block others or crash the bot.
+    Inherits from trading_platform's AlertDispatcher:
+      - add_backend(backend) — register an alert backend
+      - alert(event_type, message, details) — fan-out to all backends
+      - backend_count — number of registered backends
     """
 
-    def __init__(self, backends: list[AlertBackend] | None = None) -> None:
-        self._backends: list[AlertBackend] = list(backends) if backends else []
+    def __init__(self, backends: list | None = None) -> None:
+        super().__init__()
+        if backends:
+            for b in backends:
+                self.add_backend(b)
 
-    def add_backend(self, backend: AlertBackend) -> None:
+    def add_backend(self, backend) -> None:
+        """Add a backend without requiring the 'configured' property.
+
+        The platform's add_backend checks backend.configured, but AT's
+        alert backends may not have that property (pre-migration).
+        """
         self._backends.append(backend)
-
-    @property
-    def backend_count(self) -> int:
-        return len(self._backends)
 
     def alert(
         self,
@@ -82,7 +80,10 @@ class AlertDispatcher:
         message: str,
         details: dict | None = None,
     ) -> int:
-        """Send alert to all backends. Returns count of successful deliveries."""
+        """Send alert to all backends. Returns count of successful deliveries.
+
+        Overrides platform's void return to return delivery count (AT convention).
+        """
         delivered = 0
         for backend in self._backends:
             try:

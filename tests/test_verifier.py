@@ -287,7 +287,7 @@ class ScanMarksSnapshotTests(unittest.TestCase):
     """Test that scan_marks are properly snapshotted for the consumer thread."""
 
     def test_queued_candidate_carries_scan_marks(self):
-        from pipeline.queue import CandidateQueue, QueuedCandidate
+        from platform_adapters import CandidateQueue, QueuedCandidate
         from core.models import Opportunity, ZERO
 
         opp = Opportunity(

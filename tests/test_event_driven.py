@@ -15,7 +15,7 @@ from observability.metrics import MetricsCollector
 from persistence.db import init_db, close_db
 from persistence.repository import Repository
 from pipeline.lifecycle import CandidatePipeline
-from pipeline.queue import CandidateQueue
+from platform_adapters import CandidateQueue
 from platform_adapters import CircuitBreaker, CircuitBreakerConfig
 from risk.policy import RiskPolicy
 from run_event_driven import (

@@ -185,11 +185,88 @@ def execute_with_retry(
     return result
 
 
+# ---------------------------------------------------------------------------
+# Queue adapter
+# ---------------------------------------------------------------------------
+
+from dataclasses import dataclass
+from typing import Any
+
+from trading_platform.pipeline.queue import (
+    PriorityQueue as _PlatformQueue,
+    QueuedItem as _PlatformQueuedItem,
+)
+from core.models import Opportunity
+
+
+@dataclass
+class QueuedCandidate:
+    """AT-flavored wrapper around QueuedItem with .opportunity accessor."""
+    opportunity: Opportunity
+    enqueued_at: float
+    priority: float
+    scan_marks: dict
+
+    @classmethod
+    def _from_platform(cls, item: _PlatformQueuedItem) -> "QueuedCandidate":
+        return cls(
+            opportunity=item.item,
+            enqueued_at=item.enqueued_at,
+            priority=item.priority,
+            scan_marks=item.metadata or {},
+        )
+
+
+class CandidateQueue:
+    """AT-flavored queue wrapping trading_platform's PriorityQueue.
+
+    AT API:  push(opportunity, priority, scan_marks) → bool
+    TP API:  push(item, priority, metadata) → bool
+    """
+
+    def __init__(self, max_size: int = 100) -> None:
+        self._queue = _PlatformQueue(max_size=max_size)
+
+    def push(
+        self,
+        opportunity: Opportunity,
+        priority: float = 0.0,
+        scan_marks: dict | None = None,
+    ) -> bool:
+        return self._queue.push(opportunity, priority=priority, metadata=scan_marks)
+
+    def pop(self) -> QueuedCandidate | None:
+        item = self._queue.pop()
+        if item is None:
+            return None
+        return QueuedCandidate._from_platform(item)
+
+    def pop_batch(self, max_count: int = 10) -> list[QueuedCandidate]:
+        items = self._queue.pop_batch(max_count)
+        return [QueuedCandidate._from_platform(i) for i in items]
+
+    @property
+    def is_empty(self) -> bool:
+        return self._queue.is_empty
+
+    @property
+    def size(self) -> int:
+        return self._queue.size
+
+    def clear(self) -> int:
+        return self._queue.clear()
+
+    def stats(self) -> dict:
+        return self._queue.stats()
+
+
 # Re-export unchanged utilities.
 __all__ = [
     "BreakerState",
+    "CandidateQueue",
     "CircuitBreaker",
     "CircuitBreakerConfig",
+    "QueuedCandidate",
     "RetryPolicy",
     "RetryResult",
     "config_hash",

@@ -49,7 +49,7 @@ from market.onchain_market import OnChainMarket
 from persistence.db import init_db
 from persistence.repository import Repository
 from pipeline.lifecycle import CandidatePipeline
-from pipeline.queue import CandidateQueue
+from platform_adapters import CandidateQueue
 from pipeline.verifier import OnChainVerifier, VerificationResult
 from registry.monitored_pools import sync_monitored_pools
 from platform_adapters import CircuitBreaker, CircuitBreakerConfig

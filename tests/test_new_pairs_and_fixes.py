@@ -310,9 +310,9 @@ class UpdateWETHPriceTests(unittest.TestCase):
 class ChainLiquidityThresholdTests(unittest.TestCase):
     """Arbitrum should have a lower liquidity threshold than other L2s."""
 
-    def test_arbitrum_threshold_is_25k(self):
+    def test_arbitrum_threshold_is_50k(self):
         threshold = BotConfig.min_liquidity_for_chain("arbitrum")
-        self.assertEqual(threshold, D("25000"))
+        self.assertEqual(threshold, D("50000"))
 
     def test_base_threshold_is_100k(self):
         threshold = BotConfig.min_liquidity_for_chain("base")

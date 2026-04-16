@@ -432,6 +432,78 @@ class PerChainMinProfitTests(unittest.TestCase):
         self.assertEqual(verdict.reason, "below_min_profit")
 
 
+class PoolTooThinTests(unittest.TestCase):
+    """Hard minimum pool TVL check — safety net for stale pools."""
+
+    def test_rejects_thin_pool_on_l2(self) -> None:
+        """$25K pool on Arbitrum should be rejected (min $100K for L2)."""
+        policy = RiskPolicy(execution_enabled=True)
+        opp = _make_opp(
+            chain="arbitrum",
+            buy_liquidity_usd=D("25000"),
+            sell_liquidity_usd=D("24000000"),
+            gross_spread_pct=D("4.8"),
+            net_profit_base=D("0.045"),
+        )
+        verdict = policy.evaluate(opp)
+        self.assertFalse(verdict.approved)
+        self.assertEqual(verdict.reason, "pool_too_thin")
+        self.assertIn("25,000", verdict.details["reason_detail"])
+
+    def test_rejects_thin_pool_on_ethereum(self) -> None:
+        """$500K pool on Ethereum should be rejected (min $1M for L1)."""
+        policy = RiskPolicy(execution_enabled=True)
+        opp = _make_opp(
+            chain="ethereum",
+            buy_liquidity_usd=D("500000"),
+            sell_liquidity_usd=D("10000000"),
+        )
+        verdict = policy.evaluate(opp)
+        self.assertFalse(verdict.approved)
+        self.assertEqual(verdict.reason, "pool_too_thin")
+
+    def test_passes_adequate_pool_on_l2(self) -> None:
+        """$200K pool on Arbitrum should pass (above $100K L2 min)."""
+        policy = RiskPolicy(execution_enabled=True)
+        opp = _make_opp(
+            chain="arbitrum",
+            buy_liquidity_usd=D("200000"),
+            sell_liquidity_usd=D("5000000"),
+        )
+        verdict = policy.evaluate(opp)
+        if not verdict.approved:
+            self.assertNotEqual(verdict.reason, "pool_too_thin")
+
+    def test_passes_when_liquidity_unknown(self) -> None:
+        """When liquidity is 0 (unknown), skip the check — don't false-reject."""
+        policy = RiskPolicy(execution_enabled=True)
+        opp = _make_opp(
+            chain="arbitrum",
+            buy_liquidity_usd=D("0"),
+            sell_liquidity_usd=D("0"),
+        )
+        verdict = policy.evaluate(opp)
+        if not verdict.approved:
+            self.assertNotEqual(verdict.reason, "pool_too_thin")
+
+    def test_sushi_arbitrum_stale_pool_rejected(self) -> None:
+        """Reproduce the exact Sushi-Arbitrum WETH/USDT false positive."""
+        policy = RiskPolicy(execution_enabled=True)
+        opp = _make_opp(
+            pair="WETH/USDT",
+            buy_dex="Sushi-Arbitrum",
+            sell_dex="Uniswap-Arbitrum",
+            chain="arbitrum",
+            buy_liquidity_usd=D("25337"),
+            sell_liquidity_usd=D("24763862"),
+            gross_spread_pct=D("4.85"),
+            net_profit_base=D("0.045"),
+        )
+        verdict = policy.evaluate(opp)
+        self.assertFalse(verdict.approved)
+        self.assertEqual(verdict.reason, "pool_too_thin")
+
+
 class PerPairExposureTests(unittest.TestCase):
     """Tests for per-pair max_exposure_override in exposure limit rule."""
 

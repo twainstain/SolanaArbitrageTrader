@@ -328,9 +328,9 @@ class MinLiquidityForChainTests(unittest.TestCase):
         from decimal import Decimal
         self.assertEqual(BotConfig.min_liquidity_for_chain("ethereum"), Decimal("1000000"))
 
-    def test_arbitrum_returns_25k(self) -> None:
+    def test_arbitrum_returns_50k(self) -> None:
         from decimal import Decimal
-        self.assertEqual(BotConfig.min_liquidity_for_chain("arbitrum"), Decimal("25000"))
+        self.assertEqual(BotConfig.min_liquidity_for_chain("arbitrum"), Decimal("50000"))
 
     def test_base_returns_100k(self) -> None:
         from decimal import Decimal
@@ -346,7 +346,7 @@ class MinLiquidityForChainTests(unittest.TestCase):
 
     def test_case_insensitive(self) -> None:
         from decimal import Decimal
-        self.assertEqual(BotConfig.min_liquidity_for_chain("Arbitrum"), Decimal("25000"))
+        self.assertEqual(BotConfig.min_liquidity_for_chain("Arbitrum"), Decimal("50000"))
 
 
 if __name__ == "__main__":

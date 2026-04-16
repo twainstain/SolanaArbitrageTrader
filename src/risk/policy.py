@@ -196,6 +196,26 @@ class RiskPolicy:
             analysis["chain_min_profit"] = str(effective_min_profit)
             return RiskVerdict(False, "below_min_profit", analysis)
 
+        # Rule 2c: Minimum pool liquidity (hard floor, per-chain).
+        # Safety net for stale/dead pools that slip through the scanner's
+        # liquidity filter (e.g. same-chain pass bypasses scanner).
+        # The Sushi-Arbitrum WETH/USDT $25K pool with a fake 4.8% spread
+        # was approved because the scanner filter was bypassed.
+        from core.config import BotConfig
+        min_tvl = BotConfig.min_liquidity_for_chain(chain)
+        buy_liq = opportunity.buy_liquidity_usd
+        sell_liq = opportunity.sell_liquidity_usd
+        min_pool_liq = min(buy_liq, sell_liq)
+        if min_pool_liq > ZERO and min_pool_liq < min_tvl:
+            analysis["reason_detail"] = (
+                f"Pool liquidity ${float(min_pool_liq):,.0f} is below "
+                f"${float(min_tvl):,.0f} minimum for {chain or 'default'}. "
+                f"Buy pool: ${float(buy_liq):,.0f}, Sell pool: ${float(sell_liq):,.0f}."
+            )
+            analysis["min_pool_liquidity"] = str(min_pool_liq)
+            analysis["chain_min_tvl"] = str(min_tvl)
+            return RiskVerdict(False, "pool_too_thin", analysis)
+
         # Rule 3: Warning flags
         if len(opportunity.warning_flags) > self.max_warning_flags:
             analysis["reason_detail"] = (

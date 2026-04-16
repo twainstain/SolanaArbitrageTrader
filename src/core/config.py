@@ -115,7 +115,7 @@ class PairConfig:
 # and Camelot ($39k) show 2-5% spreads — worth trading with small size.
 _CHAIN_MIN_LIQUIDITY: dict[str, Decimal] = {
     "ethereum": D("1000000"),
-    "arbitrum": D("25000"),
+    "arbitrum": D("50000"),    # catches stale Sushi WETH/USDT ($25K TVL)
     "base": D("100000"),
     "optimism": D("100000"),
     "polygon": D("100000"),

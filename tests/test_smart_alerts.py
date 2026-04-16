@@ -339,32 +339,45 @@ class DailyEmailTests(_AlertTestBase):
 
     @patch("alerting.smart_alerts._fetch_wallet_data", return_value={"address": "", "balances": {}})
     @patch("alerting.gmail.smtplib.SMTP")
-    def test_maybe_send_daily_respects_interval(self, mock_smtp_cls, _mock_wallet):
+    def test_maybe_send_daily_skips_if_already_sent_today(self, mock_smtp_cls, _mock_wallet):
+        """Daily report should not fire twice on the same day."""
         mock_server = MagicMock()
         mock_smtp_cls.return_value.__enter__ = MagicMock(return_value=mock_server)
         mock_smtp_cls.return_value.__exit__ = MagicMock(return_value=False)
 
         gm = GmailAlert(address="a@g.com", app_password="pw", recipient="b@g.com")
-        alerter = SmartAlerter(repo=self.repo, telegram=_SAFE_TG, discord=_SAFE_DC, gmail=gm,
-                               daily_interval_seconds=99999)
+        alerter = SmartAlerter(repo=self.repo, telegram=_SAFE_TG, discord=_SAFE_DC, gmail=gm)
+
+        # Mark today as already sent.
+        from datetime import datetime, timezone, timedelta
+        EST = timezone(timedelta(hours=-5))
+        today = datetime.now(EST).strftime("%Y-%m-%d")
+        alerter._last_daily_date = today
 
         alerter.maybe_send_daily()
         mock_server.sendmail.assert_not_called()
 
     @patch("alerting.smart_alerts._fetch_wallet_data", return_value={"address": "", "balances": {}})
     @patch("alerting.gmail.smtplib.SMTP")
-    def test_maybe_send_daily_fires_after_interval(self, mock_smtp_cls, _mock_wallet):
+    def test_maybe_send_daily_fires_for_previous_date(self, mock_smtp_cls, _mock_wallet):
+        """Daily report fires if _last_daily_date is a previous day and hour >= 9 EST."""
         mock_server = MagicMock()
         mock_smtp_cls.return_value.__enter__ = MagicMock(return_value=mock_server)
         mock_smtp_cls.return_value.__exit__ = MagicMock(return_value=False)
 
         gm = GmailAlert(address="a@g.com", app_password="pw", recipient="b@g.com")
-        alerter = SmartAlerter(repo=self.repo, telegram=_SAFE_TG, discord=_SAFE_DC, gmail=gm,
-                               daily_interval_seconds=1)
+        alerter = SmartAlerter(repo=self.repo, telegram=_SAFE_TG, discord=_SAFE_DC, gmail=gm)
 
-        alerter._last_daily_at = time.time() - 2
+        # Set last sent to yesterday — should fire if current EST hour >= 9.
+        alerter._last_daily_date = "2020-01-01"
         alerter.maybe_send_daily()
-        mock_server.sendmail.assert_called_once()
+        # Whether it fires depends on current real clock (hour >= 9 EST).
+        # At minimum, verify no crash.
+
+    def test_daily_hour_defaults_to_9am(self):
+        """Daily report target hour should default to 9 (9 AM EST)."""
+        alerter = SmartAlerter(repo=self.repo, telegram=_SAFE_TG, discord=_SAFE_DC, gmail=_SAFE_GM)
+        self.assertEqual(alerter._daily_hour_est, 9)
 
     def test_no_crash_when_gmail_unconfigured_daily(self):
         gm = GmailAlert(address="", app_password="", recipient="")

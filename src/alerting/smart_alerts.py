@@ -241,7 +241,6 @@ class SmartAlerter:
         gmail: GmailAlert | None = None,
         dashboard_url: str = "http://localhost:8000/dashboard",
         email_interval_seconds: float = HOURLY_INTERVAL,
-        daily_interval_seconds: float = DAILY_INTERVAL,
     ) -> None:
         self.repo = repo
         self.telegram = telegram or TelegramAlert()
@@ -249,11 +248,12 @@ class SmartAlerter:
         self.gmail = gmail or GmailAlert()
         self.dashboard_url = dashboard_url
         self.email_interval = email_interval_seconds
-        self.daily_interval = daily_interval_seconds
         # Send first hourly report 5 minutes after startup.
         self._last_email_at: float = time.time() - email_interval_seconds + 300
-        # Send first daily report 10 minutes after startup.
-        self._last_daily_at: float = time.time() - daily_interval_seconds + 600
+        # Daily report: send at 9:00 AM EST covering the previous 24 hours.
+        # Track which date we last sent for, not a time interval.
+        self._last_daily_date: str = ""  # "YYYY-MM-DD" of the last daily report sent
+        self._daily_hour_est: int = 9    # hour in EST to send (9 = 9:00 AM)
         self._hourly_thread: Thread | None = None
         self._running = False
 
@@ -518,11 +518,26 @@ class SmartAlerter:
         else:
             logger.warning("Daily report skipped — Gmail not configured")
 
-        self._last_daily_at = time.time()
-
     def maybe_send_daily(self) -> None:
-        """Check if it's time to send the daily report."""
-        if time.time() - self._last_daily_at >= self.daily_interval:
+        """Send the daily report at 9:00 AM EST, covering the previous 24 hours.
+
+        Checks if:
+          1. Current time in EST is past the target hour (9 AM)
+          2. We haven't already sent today's report
+        This way the report fires once per day at the right time, regardless
+        of restarts or timezone differences.
+        """
+        from datetime import datetime, timezone, timedelta
+
+        # EST is UTC-5.  During EDT (Mar-Nov) it's UTC-4, but we use a fixed
+        # -5 offset for consistency — the report arrives at 9 AM EST / 10 AM EDT.
+        EST = timezone(timedelta(hours=-5))
+        now_est = datetime.now(EST)
+        today_str = now_est.strftime("%Y-%m-%d")
+
+        # Only send if it's past the target hour and we haven't sent today.
+        if now_est.hour >= self._daily_hour_est and today_str != self._last_daily_date:
+            self._last_daily_date = today_str
             self.send_daily_report()
 
     # ------------------------------------------------------------------

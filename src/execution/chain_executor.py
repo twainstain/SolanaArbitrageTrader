@@ -73,7 +73,8 @@ except ImportError:
 
 from core.config import BotConfig
 from core.contracts import PUBLIC_RPC_URLS
-from core.env import get_rpc_overrides
+from core.env import get_rpc_overrides, get_rpc_urls_for_chain
+from data.rpc_failover import RpcProvider
 from observability.log import get_logger, log_execution
 from core.models import ZERO, ExecutionResult, Opportunity
 
@@ -218,10 +219,33 @@ class ChainExecutor:
 
         # Use explicit chain or fall back to first DEX config.
         self.chain = chain_key
-        rpc_overrides = get_rpc_overrides()
-        rpc_url = rpc_overrides.get(self.chain, PUBLIC_RPC_URLS.get(self.chain, ""))
 
-        self.w3 = Web3(Web3.HTTPProvider(rpc_url))
+        # Build RPC provider with failover: RPC_CHAIN, RPC_CHAIN_2, ... + public fallback.
+        # Collect explicitly configured URLs first, then add public fallback.
+        rpc_urls = get_rpc_urls_for_chain(self.chain)
+        explicit_count = len(rpc_urls)
+        public_fallback = PUBLIC_RPC_URLS.get(self.chain, "")
+        if public_fallback and public_fallback not in rpc_urls:
+            rpc_urls.append(public_fallback)
+        if not rpc_urls:
+            # Legacy: single override from get_rpc_overrides()
+            rpc_overrides = get_rpc_overrides()
+            legacy = rpc_overrides.get(self.chain, "")
+            if legacy:
+                rpc_urls = [legacy]
+
+        # Enable failover when 2+ explicit endpoints are configured.
+        # A single explicit + public fallback doesn't warrant failover overhead.
+        self.rpc_provider: RpcProvider | None = None
+        if explicit_count >= 2:
+            self.rpc_provider = RpcProvider(self.chain, rpc_urls)
+            self.w3 = self.rpc_provider.get_web3()
+            logger.info("RPC failover enabled for %s: %d endpoints", self.chain, len(rpc_urls))
+        elif rpc_urls:
+            self.w3 = Web3(Web3.HTTPProvider(rpc_urls[0]))
+        else:
+            raise ChainExecutorError(f"No RPC URL available for chain '{self.chain}'")
+
         # Needed for PoA chains like BSC.
         self.w3.middleware_onion.inject(geth_poa_middleware, layer=0)
 
@@ -235,8 +259,8 @@ class ChainExecutor:
         self.use_flashbots = self.chain in FLASHBOTS_CHAINS
         fb_status = "ENABLED (private relay)" if self.use_flashbots else "DISABLED (public mempool)"
         logger.info(
-            "ChainExecutor ready: chain=%s, wallet=%s, contract=%s, flashbots=%s",
-            self.chain, self.account.address, self.contract_address, fb_status,
+            "ChainExecutor ready: chain=%s, wallet=%s, contract=%s, flashbots=%s, rpcs=%d",
+            self.chain, self.account.address, self.contract_address, fb_status, len(rpc_urls),
         )
 
     def execute(self, opportunity: Opportunity) -> ExecutionResult:
@@ -317,12 +341,31 @@ class ChainExecutor:
 
         except Exception as exc:
             logger.error("Execution failed: %s", exc)
+            self._record_rpc_error()
             return ExecutionResult(
                 success=False,
                 reason=f"error:{exc}",
                 realized_profit_base=ZERO,
                 opportunity=opportunity,
             )
+
+    def _record_rpc_error(self) -> None:
+        """Record an RPC error and reconnect via failover if available."""
+        if self.rpc_provider is None:
+            return
+        self.rpc_provider.record_error()
+        self.w3 = self.rpc_provider.get_web3()
+        self.w3.middleware_onion.inject(geth_poa_middleware, layer=0)
+        self.contract = self.w3.eth.contract(
+            address=Web3.to_checksum_address(self.contract_address),
+            abi=EXECUTOR_ABI,
+        )
+        logger.info("RPC failover: switched to %s", self.rpc_provider.current_url[:50])
+
+    def _record_rpc_success(self) -> None:
+        """Record a successful RPC call."""
+        if self.rpc_provider is not None:
+            self.rpc_provider.record_success()
 
     def _simulate_transaction(self, tx_data: dict) -> tuple[bool, str]:
         """Simulate the transaction via eth_call (no gas spent).
@@ -338,9 +381,16 @@ class ChainExecutor:
                 "data": tx_data["data"],
                 "value": tx_data.get("value", 0),
             })
+            self._record_rpc_success()
             return True, "ok"
+        except ConnectionError:
+            # RPC connection failed — rotate and report.
+            self._record_rpc_error()
+            return False, "rpc_connection_error"
         except Exception as exc:
             # Extract revert reason if available.
+            # Contract reverts are NOT RPC errors — the call reached the node.
+            self._record_rpc_success()
             reason = str(exc)
             if "profit below minimum" in reason.lower():
                 return False, "profit_below_minimum"

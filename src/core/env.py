@@ -47,6 +47,42 @@ def get_rpc_overrides() -> dict[str, str]:
     return overrides
 
 
+_CHAIN_ENV_NAMES = (
+    ("ethereum", "RPC_ETHEREUM"),
+    ("arbitrum", "RPC_ARBITRUM"),
+    ("base", "RPC_BASE"),
+    ("bsc", "RPC_BSC"),
+    ("polygon", "RPC_POLYGON"),
+    ("optimism", "RPC_OPTIMISM"),
+    ("avax", "RPC_AVAX"),
+    ("fantom", "RPC_FANTOM"),
+    ("linea", "RPC_LINEA"),
+    ("scroll", "RPC_SCROLL"),
+    ("zksync", "RPC_ZKSYNC"),
+    ("gnosis", "RPC_GNOSIS"),
+)
+
+
+def get_rpc_urls_for_chain(chain: str) -> list[str]:
+    """Return all RPC URLs configured for a chain, in priority order.
+
+    Collects: RPC_{CHAIN}, RPC_{CHAIN}_2, RPC_{CHAIN}_3, ...
+    Falls back to PUBLIC_RPC_URLS if nothing is set.
+    """
+    env_prefix = f"RPC_{chain.upper()}"
+    urls: list[str] = []
+    # Primary: RPC_OPTIMISM
+    primary = os.environ.get(env_prefix, "")
+    if primary:
+        urls.append(primary)
+    # Numbered fallbacks: RPC_OPTIMISM_2, RPC_OPTIMISM_3, ...
+    for i in range(2, 10):
+        url = os.environ.get(f"{env_prefix}_{i}", "")
+        if url:
+            urls.append(url)
+    return urls
+
+
 def get_bot_config_path() -> str:
     return os.environ.get("BOT_CONFIG", "config/example_config.json")
 

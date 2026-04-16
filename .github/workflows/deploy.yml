@@ -24,6 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: actions/setup-python@v5
         with:
@@ -33,6 +35,11 @@ jobs:
       - name: Install dependencies
         run: |
           pip install web3 requests python-dotenv fastapi "uvicorn[standard]" psycopg2-binary pytest httpx
+
+      - name: Install trading_platform
+        run: |
+          git submodule update --init --recursive
+          pip install lib/trading_platform
 
       - name: Run tests
         run: PYTHONPATH=src pytest tests/ -q
@@ -47,6 +54,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4

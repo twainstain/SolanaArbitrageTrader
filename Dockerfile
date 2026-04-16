@@ -3,13 +3,15 @@ FROM python:3.11-slim AS builder
 WORKDIR /app
 COPY pyproject.toml .
 # Install only the dependencies (not the project itself) to cache this layer
+COPY lib/trading_platform /tmp/trading_platform
 RUN pip install --no-cache-dir \
     "web3>=6.0" \
     "requests>=2.31" \
     "python-dotenv>=1.0" \
     "fastapi>=0.109" \
     "uvicorn[standard]>=0.27" \
-    "psycopg2-binary>=2.9"
+    "psycopg2-binary>=2.9" \
+    /tmp/trading_platform
 
 # -----------------------------------------------------------
 FROM python:3.11-slim

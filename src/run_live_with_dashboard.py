@@ -340,7 +340,10 @@ def main() -> None:
                 chain_name, opp.pair, opp.buy_dex, opp.sell_dex,
                 float(opp.gross_spread_pct), float(opp.net_profit_base),
             )
-            pipeline.process(opp)
+            try:
+                pipeline.process(opp)
+            except Exception as exc:
+                logger.error("Pipeline crashed for %s on %s: %s", opp.pair, chain_name, exc, exc_info=True)
 
         # Process the overall best through the pipeline.
         # Cross-chain opportunities get recorded but rejected so they show
@@ -389,8 +392,13 @@ def main() -> None:
                 opp.pair, opp.buy_dex, opp.sell_dex,
                 float(opp.gross_spread_pct), float(opp.net_profit_base),
             )
-            pipeline_result = pipeline.process(opp)
-            logger.info("Pipeline result: %s — %s", pipeline_result.final_status, pipeline_result.reason)
+            try:
+                pipeline_result = pipeline.process(opp)
+            except Exception as exc:
+                logger.error("Pipeline crashed for %s: %s", opp.pair, exc, exc_info=True)
+                pipeline_result = None
+            if pipeline_result:
+                logger.info("Pipeline result: %s — %s", pipeline_result.final_status, pipeline_result.reason)
             metrics.record_expected_profit(float(opp.net_profit_base))
 
         logger.info("Processed %d same-chain + %d cross-chain opportunities",

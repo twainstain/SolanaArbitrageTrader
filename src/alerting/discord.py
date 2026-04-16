@@ -50,10 +50,18 @@ class DiscordAlert:
     def configured(self) -> bool:
         return bool(self.webhook_url)
 
+    # Only send these event types to Discord. Other events (opportunity_found,
+    # simulation_failed, etc.) create too much noise. Only successful executions
+    # and critical errors warrant a Discord notification.
+    ALLOWED_EVENTS = frozenset({"trade_executed", "trade_reverted", "system_error", "daily_summary"})
+
     def send(self, event_type: str, message: str, details: dict | None = None) -> bool:
         if not self.configured:
             logger.debug("Discord not configured — skipping alert")
             return False
+        if event_type not in self.ALLOWED_EVENTS:
+            logger.debug("Discord: skipping event_type=%s (not in allowed list)", event_type)
+            return True  # Return True to avoid "failure" warnings in dispatcher
 
         color = EVENT_COLORS.get(event_type, 0x95A5A6)
         title = event_type.replace("_", " ").title()

@@ -1,351 +1,587 @@
-# PolymarketTrader — Design Plan
+# PolymarketTrader Repo Plan
 
-> A latency arbitrage bot for Polymarket prediction markets, reusing
-> infrastructure from ArbitrageTrader.
+> A practical implementation checklist for a dedicated `polymarket_trader`
+> repository, built after `ArbitrageTrader` and informed by the lessons we have
+> already learned there.
 
----
+Related reading:
 
-## What It Does
-
-Polymarket offers 15-minute BTC/ETH/SOL up/down prediction markets. When the
-spot price moves sharply on Binance, Polymarket's odds take 2-10 seconds to
-adjust. The bot detects this lag and buys the correct outcome before the
-market reprices.
-
-**Example:** BTC jumps 0.5% on Binance in 10 seconds. Polymarket's "BTC Up"
-token is still priced at $0.50 (50% probability) when it should be ~$0.75.
-The bot buys "BTC Up" at $0.50, waits for the 15-minute window to close,
-and collects $1.00 per share. Net profit: $0.50 per share minus fees.
+- [Polymarket Product Guide](./polymarket_product_guide.md)
 
 ---
 
-## How It Differs from ArbitrageTrader
+## Recommendation
 
-| Dimension | ArbitrageTrader | PolymarketTrader |
-|-----------|----------------|-----------------|
-| **Edge source** | Price difference between DEXes | Price lag between spot exchange and prediction market |
-| **Data feeds** | RPC polling every 2-8 seconds | WebSocket real-time ticks (milliseconds) |
-| **Execution** | Flash loans (atomic, zero capital risk) | CLOB limit/market orders (position risk) |
-| **Profit model** | Deterministic: spread - costs | Probabilistic: payout if correct - entry price |
-| **Holding period** | Zero (single atomic tx) | Up to 15 minutes (until market resolves) |
-| **Capital at risk** | Gas only (flash loan repays itself) | Full trade amount ($4-5K per bet) |
-| **Latency sensitivity** | Low (8-sec scan cycle is fine) | Critical (2-10 sec IS the edge) |
-| **Chain** | Ethereum, Arbitrum, Base, Optimism | Polygon (Polymarket's chain) |
+We should build `polymarket_trader` as a **separate repository or clearly
+separated sibling project**, not as a thin extension of `ArbitrageTrader`.
 
----
+Why:
 
-## Reusable Infrastructure from ArbitrageTrader
+- `ArbitrageTrader` is a spread-driven execution system.
+- `PolymarketTrader` is a latency-sensitive directional trading system.
+- The surrounding platform overlaps a lot.
+- The actual trading loop, execution risk, and settlement model do not.
 
-### Directly reusable (~60% of codebase)
+That means the right plan is:
 
-| Component | Source | Adaptation needed |
-|-----------|--------|-------------------|
-| Pipeline lifecycle (6-stage) | `pipeline/lifecycle.py` | Replace stages 4-6 with CLOB execution |
-| Risk policy (rule-based gate) | `risk/policy.py` | Add daily loss limit, settlement buffer, position concurrency |
-| Circuit breaker | `risk/circuit_breaker.py` | Add trip on Polymarket API errors |
-| Priority queue | `pipeline/queue.py` | Reuse as-is (heapq-based) |
-| Alerting (email, Telegram, Discord) | `alerting/` | Reuse as-is |
-| Dashboard (FastAPI + Revolut design) | `api/`, `dashboards/` | New views for positions, win rate, edge decay |
-| Observability (metrics, latency, PnL) | `observability/` | Add position tracking metrics |
-| Persistence (Postgres, repository) | `persistence/` | New tables for positions, settlements, market windows |
-| Configuration (dataclass + JSON) | `core/config.py` | New config fields for strategy params |
-| Logging | `observability/log.py` | Reuse as-is |
-
-### Must be built new (~40%)
-
-| Component | Purpose |
-|-----------|---------|
-| **BinanceFeed** | WebSocket BTC/ETH/SOL tick stream, price change calculation |
-| **PolymarketFeed** | WebSocket order book + REST API, bid/ask/midpoint |
-| **LatencyArbStrategy** | Signal detection: spot move → market lag → edge calculation |
-| **ProbabilityModel** | Fair value estimation from spot momentum (needs backtesting) |
-| **CLOBExecutor** | Order placement via py-clob-client SDK (market + limit orders) |
-| **PositionManager** | Track open positions, holding period, forced exit before settlement |
-| **MarketDiscovery** | Find active 15-min BTC/ETH/SOL markets, resolve token IDs |
+1. Finish `ArbitrageTrader` first.
+2. Reuse ideas and selected modules from it.
+3. Build `polymarket_trader` as a dedicated system.
+4. Start with measurement and paper trading before live trading.
 
 ---
 
-## Architecture
+## Product Framing
 
+This should be treated as a **research and paper-trading engine first**.
+
+It is tempting to describe the idea as pure arbitrage because it reacts to a
+pricing lag, but operationally it behaves differently from our current bot.
+
+`ArbitrageTrader`:
+
+- detects a spread
+- verifies costs
+- executes
+- exits immediately
+
+`PolymarketTrader`:
+
+- detects a fast move in spot markets
+- estimates whether Polymarket is mispriced
+- enters a position
+- holds inventory for some period
+- exits or settles later
+
+So the real risk profile includes:
+
+- fill risk
+- spread risk
+- latency risk
+- model risk
+- holding-period risk
+- settlement and reconciliation risk
+
+This is why we should not assume this is “just another arb strategy.”
+
+---
+
+## Core Goal
+
+The first goal is **not** to make money quickly.
+
+The first goal is to answer these questions with real data:
+
+- Does a measurable spot-to-Polymarket repricing lag still exist?
+- How long does it last in practice?
+- Which assets and windows matter most?
+- What is the actual edge after spread, fees, and slippage?
+- How much does paper alpha degrade when moved toward live execution?
+
+If we cannot answer those questions cleanly, we should not deploy real capital.
+
+---
+
+## Current Caveats
+
+As of **April 15, 2026**, these caveats matter and should stay in the repo docs.
+
+### Geographic restrictions
+
+Polymarket documentation currently states that order placement is restricted in
+some jurisdictions, including the United States.
+
+Reference:
+
+- [Polymarket geoblocking docs](https://docs.polymarket.com/polymarket-learn/FAQ/geoblocking)
+
+This means live trading should be treated as a compliance-gated phase, not as a
+baseline assumption.
+
+### WebSocket implementation details
+
+The official docs currently describe market subscriptions and user-channel auth
+flows that are more specific than the simplified examples often seen in guides.
+
+References:
+
+- [Polymarket WebSocket overview](https://docs.polymarket.com/market-data/websocket/overview)
+- [Polymarket market channel](https://docs.polymarket.com/developers/CLOB/websocket/market-channel)
+- [Polymarket user channel](https://docs.polymarket.com/market-data/websocket/user-channel)
+
+The implementation should follow the official current wire format, not stale
+examples copied from older blog posts or generated snippets.
+
+### Fees and breakeven
+
+Fees should not be modeled as a vague flat constant. Breakeven must be computed
+explicitly from the current fee model and realistic fill assumptions.
+
+Reference:
+
+- [Polymarket fee docs](https://docs.polymarket.com/trading/fees)
+
+---
+
+## What Reuse Looks Like
+
+We should think in terms of **conceptual reuse** and **selective code reuse**,
+not repo-level copy/paste.
+
+### Worth reusing from `ArbitrageTrader`
+
+These areas have high carry-over value:
+
+- risk policy patterns
+- circuit breaker patterns
+- metrics and observability patterns
+- persistence patterns
+- alerting patterns
+- dashboard and API patterns
+- config management patterns
+- logging and audit trails
+
+If we copy code, it should be done carefully and intentionally, with the new
+repo owning its own abstractions.
+
+### Must be new in `polymarket_trader`
+
+These parts are specific enough that they should be built for this repo:
+
+- market discovery for active Polymarket markets
+- Binance / Coinbase spot feed clients
+- Polymarket market data client
+- Polymarket user-channel client
+- fair-value / repricing model
+- execution engine for CLOB orders
+- position manager
+- settlement reconciler
+- replay engine
+- paper trading engine
+
+---
+
+## High-Level Architecture
+
+```text
+spot_feed(s) -> market_normalizer -> signal_model -> risk_engine -> executor
+      \                                             |
+       \-> latency recorder -> replay store -> analytics
+
+executor -> user_channel_listener -> position_manager -> settlement_reconciler
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                    POLYMARKET LATENCY ARB BOT                 │
-│                                                               │
-│  ┌────────────────────┐     ┌──────────────────────────┐     │
-│  │  BinanceFeed        │     │  PolymarketFeed           │     │
-│  │  (WebSocket)        │     │  (WebSocket + REST)        │     │
-│  │  BTC/ETH/SOL ticks  │     │  Order book updates        │     │
-│  │  ~10 ticks/sec      │     │  Bid/ask/midpoint          │     │
-│  └──────────┬──────────┘     └────────────┬──────────────┘     │
-│             │                             │                    │
-│             └──────────┬──────────────────┘                    │
-│                        ▼                                       │
-│  ┌────────────────────────────────────────────────────────┐   │
-│  │  LatencyArbStrategy                                     │   │
-│  │                                                         │   │
-│  │  1. Calculate spot price change (30s window)            │   │
-│  │  2. Estimate fair probability from momentum             │   │
-│  │  3. Compare fair value vs Polymarket price              │   │
-│  │  4. If edge > threshold → generate signal               │   │
-│  └────────────────────────┬───────────────────────────────┘   │
-│                           ▼                                    │
-│  ┌────────────────────────────────────────────────────────┐   │
-│  │  RiskPolicy + CircuitBreaker                            │   │
-│  │  - Daily loss limit ($100 default)                      │   │
-│  │  - Max concurrent positions (1)                         │   │
-│  │  - Settlement buffer (no entry in last 60s)             │   │
-│  │  - Spread filter (skip if bid-ask > 5 cents)            │   │
-│  │  - Edge threshold (min 0.10 over fair value)            │   │
-│  │  - Max daily trades (50)                                │   │
-│  └────────────────────────┬───────────────────────────────┘   │
-│                           ▼                                    │
-│  ┌────────────────────────────────────────────────────────┐   │
-│  │  CLOBExecutor                                           │   │
-│  │  - Market order (FOK) for speed                         │   │
-│  │  - Limit order (GTC) for better fill                    │   │
-│  │  - py-clob-client SDK on Polygon                        │   │
-│  └────────────────────────┬───────────────────────────────┘   │
-│                           ▼                                    │
-│  ┌────────────────────────────────────────────────────────┐   │
-│  │  PositionManager                                        │   │
-│  │  - Track open positions with entry price, edge, time    │   │
-│  │  - Force exit before settlement window closes           │   │
-│  │  - Record outcome when market resolves                  │   │
-│  └────────────────────────────────────────────────────────┘   │
-│                                                               │
-│  ┌────────────────────────────────────────────────────────┐   │
-│  │  Dashboard + Alerting + Persistence (reused from AT)    │   │
-│  └────────────────────────────────────────────────────────┘   │
-└──────────────────────────────────────────────────────────────┘
+
+### Key design rule
+
+Keep these responsibilities separate:
+
+- market data ingestion
+- signal generation
+- execution
+- position tracking
+- settlement accounting
+- analytics and replay
+
+That separation will make the system testable and help us avoid mixing
+strategy assumptions into execution code.
+
+---
+
+## Suggested Repo Structure
+
+```text
+polymarket_trader/
+├── README.md
+├── pyproject.toml
+├── .env.example
+├── config/
+│   ├── base.yaml
+│   ├── dev.yaml
+│   ├── paper.yaml
+│   └── live.yaml
+├── docs/
+│   ├── architecture.md
+│   ├── strategy_hypotheses.md
+│   ├── risk_model.md
+│   ├── runbooks.md
+│   └── go_live_checklist.md
+├── src/
+│   ├── polymarket_trader/
+│   │   ├── cli/
+│   │   │   └── main.py
+│   │   ├── core/
+│   │   │   ├── config.py
+│   │   │   ├── models.py
+│   │   │   ├── enums.py
+│   │   │   └── clock.py
+│   │   ├── feeds/
+│   │   │   ├── spot_binance.py
+│   │   │   ├── spot_coinbase.py
+│   │   │   ├── polymarket_market_ws.py
+│   │   │   ├── polymarket_user_ws.py
+│   │   │   └── market_discovery.py
+│   │   ├── strategy/
+│   │   │   ├── signal_model.py
+│   │   │   ├── feature_builder.py
+│   │   │   ├── thresholds.py
+│   │   │   └── repricing_score.py
+│   │   ├── execution/
+│   │   │   ├── clob_client.py
+│   │   │   ├── order_router.py
+│   │   │   ├── paper_executor.py
+│   │   │   └── live_executor.py
+│   │   ├── positions/
+│   │   │   ├── position_manager.py
+│   │   │   ├── pnl.py
+│   │   │   └── settlement.py
+│   │   ├── risk/
+│   │   │   ├── policy.py
+│   │   │   ├── circuit_breaker.py
+│   │   │   ├── bankroll.py
+│   │   │   └── limits.py
+│   │   ├── persistence/
+│   │   │   ├── db.py
+│   │   │   ├── repository.py
+│   │   │   └── migrations/
+│   │   ├── observability/
+│   │   │   ├── metrics.py
+│   │   │   ├── logging.py
+│   │   │   ├── latency.py
+│   │   │   └── audit.py
+│   │   ├── replay/
+│   │   │   ├── recorder.py
+│   │   │   ├── loader.py
+│   │   │   └── simulator.py
+│   │   └── services/
+│   │       ├── paper_trading_service.py
+│   │       ├── live_trading_service.py
+│   │       └── analytics_service.py
+└── tests/
+    ├── unit/
+    ├── integration/
+    └── replay/
 ```
 
 ---
 
-## Strategy Logic
+## Build Phases
 
-### Signal detection
+## Phase 0: Repo bootstrap
 
-```
-1. Binance WebSocket: BTC spot price ticks (~10/sec)
-2. Calculate price_change_pct over 30-second rolling window
-3. If |price_change_pct| >= 0.4%:
-     → spot made a significant move
-4. Read Polymarket UP token midpoint price
-5. If spot moved UP and UP token price < 0.65:
-     → market hasn't repriced yet
-     → edge = fair_probability - current_price
-6. If edge >= 0.10:
-     → BUY signal
-```
+Goal: create a clean standalone repo with a minimal skeleton.
 
-### Why 0.4% threshold?
+Checklist:
 
-A 0.4% BTC move in 30 seconds is statistically significant — it predicts the
-15-minute direction with ~75% accuracy based on momentum continuation. Below
-0.4%, the signal-to-noise ratio drops and the edge disappears into spread +
-fees.
+- [ ] initialize `polymarket_trader` repo
+- [ ] create Python project with `pyproject.toml`
+- [ ] add linting, formatting, and test tooling
+- [ ] add `.env.example`
+- [ ] add config directory with base and environment-specific config files
+- [ ] add CI for unit tests and static checks
+- [ ] add `README.md` with project framing and non-go-live disclaimer
 
-### Why 0.10 minimum edge?
+Exit criteria:
 
-Polymarket charges ~2% in fees (maker/taker). With a $0.50 entry and $1.00
-payout, you need the fair probability to be at least $0.60 to net positive
-after fees. The 0.10 edge threshold provides margin above breakeven.
+- repo installs cleanly
+- test command runs cleanly
+- config loading works
+- CLI stub starts successfully
+
+## Phase 1: Market discovery and data capture
+
+Goal: prove we can collect the right data reliably.
+
+Checklist:
+
+- [ ] implement Polymarket market discovery for BTC/ETH/SOL short-window markets
+- [ ] store market metadata including condition IDs, token IDs, start/end times
+- [ ] implement Binance spot trade feed
+- [ ] optionally implement Coinbase spot feed for cross-checking
+- [ ] implement Polymarket market WebSocket client
+- [ ] normalize timestamps into a single internal format
+- [ ] record raw spot ticks and book updates
+- [ ] record local receive timestamps for latency analysis
+- [ ] persist raw event streams and periodic snapshots
+- [ ] add health metrics for disconnects, reconnects, and event rates
+
+Exit criteria:
+
+- data collection can run for hours without falling over
+- market windows are tracked correctly
+- we can reconstruct a timeline of spot moves and Polymarket book changes
+
+## Phase 2: Replay and offline analytics
+
+Goal: determine whether the lag is still tradable after realistic assumptions.
+
+Checklist:
+
+- [ ] build replay loader for recorded sessions
+- [ ] reconstruct book state over time
+- [ ] define candidate triggers from spot movement
+- [ ] compute Polymarket repricing delay after each trigger
+- [ ] estimate fillable size at top-of-book
+- [ ] model fees explicitly
+- [ ] model slippage and partial fills
+- [ ] label each candidate opportunity with theoretical and conservative PnL
+- [ ] produce summary analytics by asset, hour, and volatility regime
+- [ ] document which assumptions are empirical vs inferred
+
+Exit criteria:
+
+- we can quantify lag distributions
+- we can estimate post-cost edge
+- we have evidence for or against continuing to paper trading
+
+## Phase 3: Paper trading engine
+
+Goal: run the full strategy loop without risking real capital.
+
+Checklist:
+
+- [ ] implement feature builder for live signal inputs
+- [ ] implement first-pass scoring model instead of hardcoded fair probability
+- [ ] separate signal generation from execution logic
+- [ ] implement paper executor with realistic fill rules
+- [ ] implement position manager with one-position and multi-position modes
+- [ ] implement settlement accounting for closed windows
+- [ ] persist signals, simulated orders, fills, positions, and outcomes
+- [ ] add dashboards for win rate, edge decay, and fill quality
+- [ ] add alerts for disconnects, missed market windows, and abnormal behavior
+
+Exit criteria:
+
+- end-to-end paper trading runs cleanly on live feeds
+- every signal and paper trade is auditable
+- we understand paper PnL by strategy slice, not just aggregate
+
+## Phase 4: Execution hardening
+
+Goal: make live execution safe enough for a tiny pilot if compliance allows.
+
+Checklist:
+
+- [ ] implement authenticated Polymarket client flows
+- [ ] implement user-channel listener for order and trade events
+- [ ] implement live order router with acknowledgments and retries
+- [ ] handle partial fills and cancel/replace flows
+- [ ] implement hard daily loss limits
+- [ ] implement market-state guards near settlement
+- [ ] implement stale-data guards
+- [ ] implement exchange-feed disagreement guards
+- [ ] implement kill switch and circuit breaker behavior
+- [ ] create explicit operational runbooks
+
+Exit criteria:
+
+- live execution paths are tested in dry runs where possible
+- operational failures move the system to safe states
+- go-live checklist is complete except for capital allocation approval
+
+## Phase 5: Tiny live pilot
+
+Goal: validate live degradation with minimal risk.
+
+Checklist:
+
+- [ ] use smallest practical trade sizes
+- [ ] allow only one live position at a time
+- [ ] cap daily loss very tightly
+- [ ] log every outbound order and every venue response
+- [ ] compare live results against simultaneous paper shadow trading
+- [ ] review fill quality daily
+- [ ] stop immediately if paper/live divergence is too large
+
+Exit criteria:
+
+- live behavior matches expectations closely enough to justify continuation
+- compliance and operational requirements remain satisfied
 
 ---
 
-## Risk Management
+## Strategy Guidelines
 
-| Guard | Value | Purpose |
-|-------|-------|---------|
-| Daily loss limit | $100 | Stop trading after cumulative $100 loss |
-| Max trade size | $20 (start), $4-5K (scaled) | Start small, scale after validation |
-| Settlement buffer | 60 seconds | Don't enter in the last minute of a window |
-| Max spread | $0.05 | Skip illiquid markets |
-| Max concurrent | 1 position | One trade at a time (initially) |
-| Max daily trades | 50 | Prevent overtrading |
-| Edge threshold | 0.10 | Minimum edge to enter |
-| Price range filter | 0.35-0.65 | Only trade when market hasn't already repriced |
+These should be rules for the repo from the beginning.
+
+### Do not hardcode certainty
+
+Avoid simplistic logic like:
+
+- `fair_up_prob = 0.75`
+- fixed edge assumptions without calibration
+- fixed fee assumptions without current docs
+
+Instead, start with a transparent scoring model using features like:
+
+- spot move magnitude
+- move speed
+- time remaining in market window
+- Polymarket spread
+- top-of-book depth
+- recent repricing speed
+- cross-exchange confirmation
+- local feed freshness
+
+### Record non-trades too
+
+We should persist:
+
+- trades we took
+- signals we skipped
+- signals we missed
+- signals blocked by risk policy
+
+That will matter later when we try to understand whether the model was bad or
+execution was late.
+
+### Separate research from execution
+
+The replay system should be able to evaluate strategy changes without changing
+live execution code.
 
 ---
 
-## Data Model
+## Initial Data Model
 
-### New tables (extends ArbitrageTrader schema)
+These tables are a reasonable starting point for the dedicated repo.
 
 ```sql
--- Prediction market opportunities
-CREATE TABLE pm_signals (
-    signal_id TEXT PRIMARY KEY,
-    asset TEXT,                    -- BTC, ETH, SOL
-    direction TEXT,                -- UP, DOWN
-    spot_price REAL,
-    spot_change_pct REAL,
-    polymarket_price REAL,
-    fair_probability REAL,
-    edge REAL,
-    spread REAL,
-    signal_time TEXT,              -- ISO UTC
-    status TEXT                    -- signal, executed, expired, settled
-);
-
--- Executed positions
-CREATE TABLE pm_positions (
-    position_id TEXT PRIMARY KEY,
-    signal_id TEXT REFERENCES pm_signals,
-    token_id TEXT,                 -- Polymarket token ID
-    side TEXT,                     -- BUY_UP, BUY_DOWN
-    entry_price REAL,
-    amount_usdc REAL,
-    shares REAL,
-    entry_time TEXT,
-    settlement_time TEXT,
-    outcome TEXT,                  -- won, lost, expired
-    payout REAL,
-    net_pnl REAL
-);
-
--- Market windows
-CREATE TABLE pm_markets (
+CREATE TABLE markets (
     market_id TEXT PRIMARY KEY,
-    asset TEXT,
-    window_start TEXT,
-    window_end TEXT,
-    up_token_id TEXT,
-    down_token_id TEXT,
-    resolution TEXT                -- up, down, null (pending)
+    asset TEXT NOT NULL,
+    condition_id TEXT NOT NULL,
+    up_token_id TEXT NOT NULL,
+    down_token_id TEXT NOT NULL,
+    window_start TIMESTAMP NOT NULL,
+    window_end TIMESTAMP NOT NULL,
+    status TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL
+);
+
+CREATE TABLE raw_spot_ticks (
+    id TEXT PRIMARY KEY,
+    venue TEXT NOT NULL,
+    asset TEXT NOT NULL,
+    price NUMERIC NOT NULL,
+    source_ts TIMESTAMP,
+    received_ts TIMESTAMP NOT NULL
+);
+
+CREATE TABLE raw_book_events (
+    id TEXT PRIMARY KEY,
+    market_id TEXT NOT NULL,
+    token_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    source_ts TIMESTAMP,
+    received_ts TIMESTAMP NOT NULL
+);
+
+CREATE TABLE signals (
+    signal_id TEXT PRIMARY KEY,
+    market_id TEXT NOT NULL,
+    asset TEXT NOT NULL,
+    side TEXT NOT NULL,
+    score NUMERIC NOT NULL,
+    edge_estimate NUMERIC,
+    trigger_price NUMERIC,
+    pm_price NUMERIC,
+    spread NUMERIC,
+    created_at TIMESTAMP NOT NULL,
+    status TEXT NOT NULL
+);
+
+CREATE TABLE orders (
+    order_id TEXT PRIMARY KEY,
+    signal_id TEXT,
+    venue TEXT NOT NULL,
+    token_id TEXT NOT NULL,
+    side TEXT NOT NULL,
+    order_type TEXT NOT NULL,
+    requested_price NUMERIC,
+    requested_size NUMERIC NOT NULL,
+    status TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL
+);
+
+CREATE TABLE fills (
+    fill_id TEXT PRIMARY KEY,
+    order_id TEXT NOT NULL,
+    fill_price NUMERIC NOT NULL,
+    fill_size NUMERIC NOT NULL,
+    fee NUMERIC,
+    created_at TIMESTAMP NOT NULL
+);
+
+CREATE TABLE positions (
+    position_id TEXT PRIMARY KEY,
+    market_id TEXT NOT NULL,
+    token_id TEXT NOT NULL,
+    side TEXT NOT NULL,
+    entry_cost NUMERIC NOT NULL,
+    quantity NUMERIC NOT NULL,
+    status TEXT NOT NULL,
+    opened_at TIMESTAMP NOT NULL,
+    closed_at TIMESTAMP
 );
 ```
 
 ---
 
-## Project Structure
+## Testing Plan
 
-```
-PolymarketTrader/
-├── main.py                      # CLI entry point
-├── config.yaml                  # Strategy parameters
-├── .env                         # Secrets (wallet, API keys)
-│
-├── feeds/                       # NEW — real-time data
-│   ├── binance.py               # WebSocket BTC/ETH/SOL ticks
-│   └── polymarket.py            # WebSocket order book + REST
-│
-├── strategy/                    # NEW — signal detection
-│   ├── latency_arb.py           # Core strategy logic
-│   └── probability_model.py     # Fair value estimation
-│
-├── execution/                   # NEW — CLOB orders
-│   ├── clob_executor.py         # py-clob-client wrapper
-│   ├── position_manager.py      # Track open positions
-│   └── paper_executor.py        # Simulated fills
-│
-├── core/                        # REUSED from ArbitrageTrader
-│   ├── models.py                # Extend with PM-specific models
-│   └── config.py                # Extend with PM config fields
-│
-├── pipeline/                    # REUSED
-│   ├── lifecycle.py             # Same 6-stage pattern
-│   └── queue.py                 # Same heapq priority queue
-│
-├── risk/                        # REUSED + extended
-│   ├── policy.py                # Add PM-specific rules
-│   └── circuit_breaker.py       # Add Polymarket API errors
-│
-├── persistence/                 # REUSED + extended
-│   ├── db.py                    # Same DB layer
-│   └── repository.py            # Add PM tables
-│
-├── observability/               # REUSED
-│   ├── metrics.py
-│   ├── log.py
-│   └── latency_tracker.py
-│
-├── alerting/                    # REUSED
-│   ├── gmail.py
-│   ├── telegram.py
-│   └── smart_alerts.py
-│
-├── api/                         # REUSED + new views
-│   └── app.py
-│
-└── dashboards/                  # REUSED + new views
-    └── pm_dashboard.py          # Positions, win rate, edge decay
-```
+We should not rely only on unit tests.
+
+Checklist:
+
+- [ ] unit tests for signal and risk logic
+- [ ] unit tests for fee and PnL calculations
+- [ ] integration tests for feed parsing
+- [ ] integration tests for order lifecycle state transitions
+- [ ] replay-based tests using captured sessions
+- [ ] long-run soak test for data collection
+- [ ] failure tests for disconnects and stale feeds
 
 ---
 
-## Key Differences from the $438K Bot
+## Operational Rules
 
-The guide describes a bot that made $438K in 30 days with a 98% win rate.
-Important caveats:
+Before any live pilot, the repo should enforce these policies:
 
-1. **The edge may be closing.** Polymarket added dynamic fees in response to
-   latency arb bots. The 2-10 second lag may now be smaller.
-
-2. **92.4% of Polymarket wallets lost money.** Having the code doesn't
-   guarantee profit — timing, execution quality, and parameter tuning matter.
-
-3. **The $438K bot used $4-5K per trade.** Starting at $20 per trade is
-   safer for validation. Scale only after proving the edge exists.
-
-4. **VPS location matters.** The bot should run close to Polymarket's
-   infrastructure (Dublin/London) for minimal latency.
-
-5. **The strategy is momentum-based.** It works in trending markets but
-   fails in choppy/sideways markets where 30-second moves reverse.
+- live mode is disabled by default
+- paper mode is the default runtime mode
+- all secrets come from environment or secret management
+- every live action is audit-logged
+- every risk halt is visible in metrics and alerts
+- the system must fail closed on stale or conflicting data
 
 ---
 
-## Implementation Phases
+## Definition Of Done For The Repo
 
-### Phase 1: Validate the edge (1-2 weeks)
-- Build BinanceFeed + PolymarketFeed
-- Implement strategy with paper executor
-- Run for 1-2 weeks, analyze results.csv
-- Answer: does the 2-10 second lag still exist?
+We should consider the initial `polymarket_trader` repo successful when:
 
-### Phase 2: Live execution with tiny size (1 week)
-- Build CLOBExecutor with $20 max trade size
-- Wire up risk management (daily loss limit $100)
-- Run live for 1 week
-- Answer: does paper trading profit translate to real profit?
-
-### Phase 3: Scale (ongoing)
-- Increase trade size gradually ($20 → $100 → $500 → $2K)
-- Add ETH and SOL markets
-- Deploy on low-latency VPS
-- Add position manager with forced exit
-- Build dashboard for real-time monitoring
+- it captures and replays real market data reliably
+- it can quantify lag and edge after costs
+- it paper trades end-to-end with full auditability
+- it has risk controls and runbooks strong enough for a tiny pilot
+- it gives us an honest answer about whether the opportunity is still real
 
 ---
 
-## Dependencies
+## Bottom Line
 
-```
-py-clob-client    # Polymarket SDK
-websockets        # Binance + Polymarket WebSocket
-aiohttp           # Async HTTP
-pyyaml            # Config
-python-dotenv     # Secrets
-pandas            # Backtesting analysis
-fastapi           # Dashboard (reused)
-uvicorn           # Server (reused)
-```
+`polymarket_trader` is worth building if we treat it as a disciplined research
+system first.
 
----
+The right sequence is:
 
-## Open Questions
+1. build the repo
+2. collect the data
+3. measure the lag
+4. replay the opportunities
+5. paper trade the strategy
+6. only then consider a tiny live pilot
 
-1. **Does the latency edge still exist?** Polymarket's dynamic fees may have
-   narrowed or eliminated the 2-10 second lag. Phase 1 answers this.
-
-2. **What's the optimal probability model?** The guide uses a fixed 0.75 fair
-   value. A momentum-based model using historical tick data would be more
-   accurate. Needs backtesting.
-
-3. **Cross-platform arbitrage?** Kalshi offers similar BTC prediction markets.
-   If Polymarket and Kalshi disagree on the same outcome, there's a risk-free
-   arb opportunity. Worth investigating.
-
-4. **Regulatory risk?** Polymarket operates in a gray area. CFTC enforcement
-   could impact access for US-based traders.
+That framing gives us something much more valuable than a viral bot clone: a
+system that can tell us whether the edge is real, shrinking, or already gone.

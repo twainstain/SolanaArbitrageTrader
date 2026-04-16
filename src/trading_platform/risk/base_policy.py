@@ -52,8 +52,10 @@ class RuleBasedPolicy:
 
     Args:
         rules: Ordered list of RiskRule implementations.
-        simulation_mode: If True, passing all rules returns
-            RiskVerdict(False, "simulation_approved") instead of approved=True.
+        simulation_mode: If True, passing all rules returns an approved verdict
+            tagged with ``reason="simulation_approved"`` and
+            ``details["simulation"] = True`` so callers can distinguish
+            paper approval from live approval without breaking pipeline flow.
     """
 
     def __init__(
@@ -91,6 +93,6 @@ class RuleBasedPolicy:
                 return verdict
 
         if self.simulation_mode:
-            return RiskVerdict(False, "simulation_approved", {"simulation": True})
+            return RiskVerdict(True, "simulation_approved", {"simulation": True})
 
         return RiskVerdict(True, "all_rules_passed")

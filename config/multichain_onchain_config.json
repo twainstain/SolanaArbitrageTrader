@@ -23,7 +23,7 @@
   },
   "extra_pairs": [
     {"pair": "WETH/USDT", "base_asset": "WETH", "quote_asset": "USDT", "trade_size": 1.0},
-    {"pair": "OP/USDC", "base_asset": "OP", "quote_asset": "USDC", "trade_size": 250.0, "chain": "optimism"}
+    {"pair": "OP/USDC", "base_asset": "OP", "quote_asset": "USDC", "trade_size": 20000.0, "chain": "optimism"}
   ],
   "dexes": [
     {"name": "Uniswap-Ethereum",  "base_price": 0, "fee_bps": 5.0,  "volatility_bps": 0, "chain": "ethereum", "dex_type": "uniswap_v3"},

@@ -1,0 +1,1 @@
+"""Trading platform alerting module."""

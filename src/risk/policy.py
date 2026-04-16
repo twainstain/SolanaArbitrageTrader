@@ -1,13 +1,7 @@
 """Risk policy engine — configurable rules for trade approval.
 
-Per the architecture doc, the risk engine must:
-  - enforce trade thresholds
-  - reject opportunities below minimum expected edge
-  - reject stale quotes
-  - reject low-liquidity routes
-  - reject trades with excessive price impact
-  - reject routes too sensitive to gas spikes
-  - reject trades with poor execution confidence
+Uses trading_platform's RuleBasedPolicy framework with ArbitrageTrader-specific
+rules defined in risk/rules.py. Each rule is independently testable and reorderable.
 
 Principle: No trade is better than a bad trade.
 """
@@ -20,6 +14,18 @@ from decimal import Decimal
 from typing import NamedTuple
 
 from core.models import ZERO, Opportunity, OpportunityStatus as Status
+from risk.rules import (
+    ExecutionModeRule,
+    ExposureLimitRule,
+    GasProfitRatioRule,
+    LiquidityScoreRule,
+    MinProfitRule,
+    MinSpreadRule,
+    PoolLiquidityRule,
+    RateLimitRule,
+    WarningFlagRule,
+)
+from trading_platform.contracts import RiskVerdict as _PlatformVerdict
 
 D = Decimal
 logger = logging.getLogger(__name__)
@@ -33,13 +39,6 @@ class RiskVerdict(NamedTuple):
 
 
 # Per-chain minimum spread thresholds.
-# Ethereum mainnet has high gas ($2-5), so needs a wider spread to be
-# profitable.  L2s have cheap gas ($0.01-0.10), so smaller spreads work.
-#
-# Derivation (1 WETH trade at ~$2300):
-#   Ethereum: gas ~$3, flash 9bps=$2.07, slip 10bps=$2.30 → need ~$8 = 0.35%
-#   Arbitrum: gas ~$0.10, same fees → need ~$4.5 = 0.20%
-#   Base/Optimism: gas ~$0.05, same fees → need ~$4.4 = 0.15%
 CHAIN_MIN_SPREAD_PCT: dict[str, Decimal] = {
     "ethereum": D("0.40"),
     "arbitrum": D("0.20"),
@@ -51,72 +50,53 @@ CHAIN_MIN_SPREAD_PCT: dict[str, Decimal] = {
 }
 
 # Per-chain minimum net profit thresholds (in base asset, e.g. WETH).
-#
-# Ethereum gas is ~$2-5 per tx, so profit must cover that → 0.005 WETH (~$12).
-# L2s have gas ~$0.01-0.10, so micro-opportunities down to ~$0.50 are viable.
-#
-# These are calibrated to each chain's gas cost + a safety margin:
-#   threshold ≈ 2 × typical_gas_cost (covers gas variance and slippage error)
 CHAIN_MIN_NET_PROFIT: dict[str, Decimal] = {
-    "ethereum": D("0.005"),   # ~$12 — high gas needs big profit
-    "arbitrum": D("0.0002"),  # ~$0.50 — very cheap gas
-    "base": D("0.0002"),      # ~$0.50 — very cheap gas
-    "optimism": D("0.0002"),  # ~$0.50 — very cheap gas
-    "polygon": D("0.0003"),   # ~$0.70 — cheap gas, slightly higher variance
-    "bsc": D("0.0003"),       # ~$0.70
-    "avax": D("0.0005"),      # ~$1.20 — moderate gas
+    "ethereum": D("0.005"),
+    "arbitrum": D("0.0002"),
+    "base": D("0.0002"),
+    "optimism": D("0.0002"),
+    "polygon": D("0.0003"),
+    "bsc": D("0.0003"),
+    "avax": D("0.0005"),
 }
 
 
 @dataclass
 class RiskPolicy:
-    """Configurable risk policy with named rules.
+    """Configurable risk policy backed by trading_platform's rule-based engine.
 
-    Each rule is a threshold. An opportunity must pass ALL rules to be approved.
+    External API is unchanged — callers use evaluate(opportunity, ...) as before.
+    Internally, each threshold is a pluggable RiskRule evaluated sequentially.
     """
-    # Default minimum net profit in base asset (used when chain not in override map).
-    # Production default: 0.005 WETH (~$12).
     min_net_profit: Decimal = D("0.005")
-
-    # Per-chain net profit overrides.  L2s with cheap gas can capture smaller profits.
     chain_min_net_profit: dict = field(default_factory=lambda: dict(CHAIN_MIN_NET_PROFIT))
-
-    # Default minimum spread percentage (used when chain not in override map).
     min_spread_pct: Decimal = D("0.40")
-
-    # Per-chain spread overrides.  L2s with cheap gas can use tighter spreads.
     chain_min_spread_pct: dict = field(default_factory=lambda: dict(CHAIN_MIN_SPREAD_PCT))
-
-    # Maximum allowed slippage in bps
     max_slippage_bps: Decimal = D("50")
-
-    # Minimum pool liquidity in USD for either venue
     min_liquidity_usd: Decimal = D("50000")
-
-    # Maximum quote age in seconds (0 = disabled)
     max_quote_age_seconds: float = 60.0
-
-    # Gas cost must be below this fraction of expected profit (e.g. 0.5 = 50%)
     max_gas_profit_ratio: Decimal = D("0.5")
-
-    # Maximum warning flags allowed
     max_warning_flags: int = 1
-
-    # Maximum trades per interval (rate limiting)
     max_trades_per_hour: int = 100
-
-    # Maximum open exposure per pair in base asset
     max_exposure_per_pair: Decimal = D("10")
-
-    # Minimum liquidity score (0.0-1.0)
     min_liquidity_score: float = 0.3
-
-    # Whether live execution is enabled (global default)
     execution_enabled: bool = False
-
-    # Per-chain execution mode: "live", "simulated", or "disabled".
-    # If a chain is not in this dict, falls back to global execution_enabled.
     chain_execution_mode: dict = field(default_factory=dict)
+
+    def _build_rules(self) -> list:
+        """Build the rule chain from current config. Called on each evaluate()
+        to pick up any runtime config changes (e.g. set_chain_mode)."""
+        return [
+            ExecutionModeRule(self.chain_execution_mode, self.execution_enabled),
+            MinSpreadRule(self.chain_min_spread_pct, self.min_spread_pct),
+            MinProfitRule(self.chain_min_net_profit, self.min_net_profit),
+            PoolLiquidityRule(),
+            WarningFlagRule(self.max_warning_flags),
+            LiquidityScoreRule(self.min_liquidity_score),
+            GasProfitRatioRule(self.max_gas_profit_ratio),
+            RateLimitRule(self.max_trades_per_hour),
+            ExposureLimitRule(self.max_exposure_per_pair),
+        ]
 
     def evaluate(
         self,
@@ -126,19 +106,11 @@ class RiskPolicy:
     ) -> RiskVerdict:
         """Evaluate an opportunity against all risk rules.
 
-        Rule evaluation order matters:
-          1. Kill switch — highest authority, checked first
-          2. Min profit  — non-negotiable floor (if not profitable, skip everything)
-          3. Warning flags — hard veto on compounding risk
-          4. Liquidity score — pool quality check
-          5. Gas-to-profit ratio — economics check
-          6. Rate limiting — velocity control
-          7. Exposure limit — position sizing
-
         Returns RiskVerdict with approved=True only if ALL rules pass.
-        Analysis dict is populated even on rejection for dashboard visibility.
         """
-        # Build analysis details for every verdict (approved or rejected).
+        chain = opportunity.chain.lower() if opportunity.chain else ""
+
+        # Build shared analysis dict (populated by rules for dashboard visibility).
         analysis = {
             "net_profit": str(opportunity.net_profit_base),
             "trade_size": str(opportunity.trade_size),
@@ -154,136 +126,26 @@ class RiskPolicy:
             "fee_included": opportunity.fees_pre_included,
         }
 
-        # Rule 1: Execution mode — per-chain or global fallback.
-        # When a chain is in simulated mode, we still evaluate ALL other rules
-        # to show "simulation_approved" vs "simulation_rejected" on the dashboard.
-        chain = opportunity.chain.lower() if opportunity.chain else ""
-        chain_mode = self.chain_execution_mode.get(chain)
-        if chain_mode == "disabled":
-            return RiskVerdict(False, "chain_disabled", {
-                **analysis, "reason_detail": f"Execution disabled for chain '{chain}'."
-            })
-        if chain_mode == "live":
-            simulation_mode = False
-        elif chain_mode == "simulated":
-            simulation_mode = True
-        else:
-            simulation_mode = not self.execution_enabled
+        # Context carries per-evaluation state shared across rules.
+        context = {
+            "chain": chain,
+            "analysis": analysis,
+            "current_hour_trades": current_hour_trades,
+            "current_pair_exposure": current_pair_exposure,
+            "simulation_mode": False,  # set by ExecutionModeRule
+        }
 
-        # Rule 2a: Minimum spread percentage (per-chain)
-        effective_min_spread = self.chain_min_spread_pct.get(chain, self.min_spread_pct)
-        if opportunity.gross_spread_pct < effective_min_spread:
-            analysis["reason_detail"] = (
-                f"Spread {opportunity.gross_spread_pct}% is below minimum "
-                f"{effective_min_spread}% for {chain or 'default'}."
-            )
-            analysis["chain_min_spread"] = str(effective_min_spread)
-            return RiskVerdict(False, "below_min_spread", analysis)
-
-        # Rule 2b: Minimum net profit (per-chain threshold)
-        # L2s with cheap gas can capture smaller profits than Ethereum.
-        effective_min_profit = self.chain_min_net_profit.get(chain, self.min_net_profit)
-        if opportunity.net_profit_base < effective_min_profit:
-            analysis["reason_detail"] = (
-                f"Net profit {opportunity.net_profit_base} is below minimum "
-                f"{effective_min_profit} for {chain or 'default'}. "
-                f"Costs: DEX fees={opportunity.dex_fee_cost_quote}, "
-                f"flash={opportunity.flash_loan_fee_quote}, "
-                f"slippage={opportunity.slippage_cost_quote}, "
-                f"gas={opportunity.gas_cost_base}."
-            )
-            analysis["required"] = str(effective_min_profit)
-            analysis["chain_min_profit"] = str(effective_min_profit)
-            return RiskVerdict(False, "below_min_profit", analysis)
-
-        # Rule 2c: Minimum pool liquidity (hard floor, per-chain).
-        # Safety net for stale/dead pools that slip through the scanner's
-        # liquidity filter (e.g. same-chain pass bypasses scanner).
-        # The Sushi-Arbitrum WETH/USDT $25K pool with a fake 4.8% spread
-        # was approved because the scanner filter was bypassed.
-        from core.config import BotConfig
-        min_tvl = BotConfig.min_liquidity_for_chain(chain)
-        buy_liq = opportunity.buy_liquidity_usd
-        sell_liq = opportunity.sell_liquidity_usd
-        min_pool_liq = min(buy_liq, sell_liq)
-        if min_pool_liq > ZERO and min_pool_liq < min_tvl:
-            analysis["reason_detail"] = (
-                f"Pool liquidity ${float(min_pool_liq):,.0f} is below "
-                f"${float(min_tvl):,.0f} minimum for {chain or 'default'}. "
-                f"Buy pool: ${float(buy_liq):,.0f}, Sell pool: ${float(sell_liq):,.0f}."
-            )
-            analysis["min_pool_liquidity"] = str(min_pool_liq)
-            analysis["chain_min_tvl"] = str(min_tvl)
-            return RiskVerdict(False, "pool_too_thin", analysis)
-
-        # Rule 3: Warning flags
-        if len(opportunity.warning_flags) > self.max_warning_flags:
-            analysis["reason_detail"] = (
-                f"Too many warning flags ({len(opportunity.warning_flags)} > max {self.max_warning_flags}): "
-                f"{', '.join(opportunity.warning_flags)}."
-            )
-            return RiskVerdict(False, "too_many_flags", analysis)
-
-        # Rule 4: Liquidity score
-        if opportunity.liquidity_score < self.min_liquidity_score:
-            analysis["reason_detail"] = (
-                f"Liquidity score {opportunity.liquidity_score:.2f} is below minimum {self.min_liquidity_score}. "
-                f"Pool may be too thin for the trade size."
-            )
-            return RiskVerdict(False, "low_liquidity_score", analysis)
-
-        # Rule 5: Gas-to-profit ratio
-        if opportunity.net_profit_base > ZERO and opportunity.gas_cost_base > ZERO:
-            gas_ratio = opportunity.gas_cost_base / opportunity.net_profit_base
-            if gas_ratio > self.max_gas_profit_ratio:
-                analysis["reason_detail"] = (
-                    f"Gas cost is {float(gas_ratio)*100:.1f}% of profit "
-                    f"(max allowed {float(self.max_gas_profit_ratio)*100:.0f}%). "
-                    f"Gas={opportunity.gas_cost_base}, profit={opportunity.net_profit_base}."
-                )
-                analysis["gas_ratio"] = str(gas_ratio)
-                return RiskVerdict(False, "gas_too_expensive", analysis)
-
-        # Rule 6: Rate limiting
-        if current_hour_trades >= self.max_trades_per_hour:
-            analysis["reason_detail"] = (
-                f"Rate limit: {current_hour_trades} trades in the last hour "
-                f"(max {self.max_trades_per_hour})."
-            )
-            return RiskVerdict(False, "rate_limit_exceeded", analysis)
-
-        # Rule 7: Exposure limit
-        # Use per-pair override when set (essential for non-WETH pairs like
-        # OP/USDC where the global limit of 10 WETH makes no sense —
-        # trade_size is 20,000 OP but global max is 10 WETH).
-        if opportunity.max_exposure_override > ZERO:
-            effective_max_exposure = opportunity.max_exposure_override
-        elif opportunity.trade_size > self.max_exposure_per_pair * D("10"):
-            # trade_size is >10× the global limit — almost certainly a
-            # non-WETH pair (e.g. 20,000 OP) without an override configured.
-            # Skip exposure check rather than false-reject.
-            logger.warning(
-                "Exposure check skipped for %s: trade_size=%s >> global max=%s "
-                "(missing max_exposure_override?)",
-                opportunity.pair, opportunity.trade_size, self.max_exposure_per_pair,
-            )
-            effective_max_exposure = opportunity.trade_size * D("2")
-        else:
-            effective_max_exposure = self.max_exposure_per_pair
-        new_exposure = current_pair_exposure + opportunity.trade_size
-        if new_exposure > effective_max_exposure:
-            analysis["reason_detail"] = (
-                f"Exposure would be {new_exposure} (max {effective_max_exposure}). "
-                f"Current exposure: {current_pair_exposure}."
-            )
-            analysis["effective_max_exposure"] = str(effective_max_exposure)
-            return RiskVerdict(False, "exposure_limit", analysis)
+        # Run the rule chain.
+        rules = self._build_rules()
+        for rule in rules:
+            verdict = rule.evaluate(opportunity, context)
+            if not verdict.approved:
+                # Convert platform RiskVerdict to AT's NamedTuple format.
+                return RiskVerdict(False, verdict.reason, verdict.details or analysis)
 
         # All rules passed.
+        simulation_mode = context.get("simulation_mode", False)
         if simulation_mode:
-            # In simulation mode: trade WOULD have been approved, but not executing.
-            # Dashboard shows "simulation_approved" so operators can see which
-            # trades would have been profitable if execution were enabled.
             analysis["reason_detail"] = (
                 "SIMULATION: All risk checks passed. This trade would be executed "
                 "if live mode were enabled (POST /execution {enabled: true})."

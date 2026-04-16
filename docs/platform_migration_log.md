@@ -368,31 +368,119 @@ dispatcher.add_backend(discord)
 
 ---
 
-## Remaining: Phase 4 (risk policy, pipeline)
+## Phase 4.1: Risk Policy → Pluggable Rules (completed)
 
-### Risk Policy → RuleBasedPolicy
+### What Changed
 
-Extract 8 hardcoded rules into pluggable `RiskRule` objects:
-- MinSpreadRule, MinProfitRule, PoolLiquidityRule, WarningFlagRule
-- GasProfitRatioRule, RateLimitRule, ExposureLimitRule, ExecutionModeRule
+| Item | Before | After |
+|------|--------|-------|
+| `src/risk/policy.py` | 310-line monolith with 8 inline rules | **Rewritten** — delegates to rule chain, 170 lines |
+| `src/risk/rules.py` | Did not exist | **Created** — 9 pluggable rule classes, 230 lines |
 
-**For other bots**: Each product defines its own rules:
+### Architecture
+
+The monolithic `evaluate()` with 8 inline `if` blocks was refactored into separate rule classes that follow the `trading_platform.contracts.RiskRule` protocol:
+
+```
+RiskPolicy.evaluate(opportunity, ...)
+  │
+  ├─ ExecutionModeRule    — chain disabled? set simulation_mode in context
+  ├─ MinSpreadRule        — per-chain spread thresholds
+  ├─ MinProfitRule        — per-chain profit thresholds
+  ├─ PoolLiquidityRule    — stale pool safety net
+  ├─ WarningFlagRule      — compounding risk veto
+  ├─ LiquidityScoreRule   — pool quality check
+  ├─ GasProfitRatioRule   — economics check
+  ├─ RateLimitRule        — velocity control
+  └─ ExposureLimitRule    — position sizing
+```
+
+Each rule:
+- Has a `name` for rejection tracking
+- Takes `(opportunity, context)` where context is a shared dict
+- Returns `RiskVerdict(approved, reason, details)`
+- Is independently testable
+
+The shared `context` dict passes state between rules (e.g., `ExecutionModeRule` sets `simulation_mode` for the final verdict).
+
+### How Other Bots Use This
+
+**PolymarketTrader** — prediction market rules:
+
 ```python
-# PolymarketTrader rules
+from trading_platform.risk import RuleBasedPolicy
+from trading_platform.contracts import RiskVerdict
+
 class MinEdgeRule:
     name = "min_edge"
     def evaluate(self, bet, context) -> RiskVerdict:
-        if bet.edge_pct < context["min_edge"]:
-            return RiskVerdict(False, "edge_too_thin")
+        if bet.edge_pct < context.get("min_edge", 0.05):
+            return RiskVerdict(False, "edge_too_thin", {"edge": bet.edge_pct})
         return RiskVerdict(True, "ok")
 
 class MaxPositionRule:
     name = "max_position"
     def evaluate(self, bet, context) -> RiskVerdict:
         if context["current_exposure"] + bet.size > context["max_exposure"]:
-            return RiskVerdict(False, "position_limit")
+            return RiskVerdict(False, "position_limit", {})
+        return RiskVerdict(True, "ok")
+
+class MarketLiquidityRule:
+    name = "market_liquidity"
+    def evaluate(self, bet, context) -> RiskVerdict:
+        if bet.order_book_depth < 1000:
+            return RiskVerdict(False, "thin_book", {"depth": bet.order_book_depth})
+        return RiskVerdict(True, "ok")
+
+# Wire up
+policy = RuleBasedPolicy(rules=[
+    MinEdgeRule(),
+    MaxPositionRule(),
+    MarketLiquidityRule(),
+])
+verdict = policy.evaluate(bet, current_exposure=500, max_exposure=10000, min_edge=0.03)
+```
+
+**SolanaTrader** — DEX arb rules:
+
+```python
+class MinProfitSolRule:
+    name = "min_profit"
+    def evaluate(self, swap, context) -> RiskVerdict:
+        if swap.net_profit_sol < context.get("min_profit_sol", 0.01):
+            return RiskVerdict(False, "below_min_profit", {})
+        return RiskVerdict(True, "ok")
+
+class JitoTipRule:
+    name = "jito_tip"
+    def evaluate(self, swap, context) -> RiskVerdict:
+        if swap.expected_tip > swap.net_profit_sol * 0.5:
+            return RiskVerdict(False, "tip_too_high", {"tip": swap.expected_tip})
+        return RiskVerdict(True, "ok")
+
+class SlotFreshnessRule:
+    name = "slot_freshness"
+    def evaluate(self, swap, context) -> RiskVerdict:
+        if swap.slot_age > 2:
+            return RiskVerdict(False, "stale_slot", {"age": swap.slot_age})
         return RiskVerdict(True, "ok")
 ```
+
+### Benefits
+
+1. **Independently testable** — each rule is a small class with clear inputs/outputs
+2. **Reorderable** — change rule priority by reordering the list
+3. **Toggleable** — remove a rule from the list to disable it
+4. **Reusable** — rules like RateLimitRule and ExposureLimitRule work across products
+5. **Observable** — the rule `name` appears in rejection reasons for dashboard tracking
+
+### Tests
+
+949/949 pass. Zero regressions. All existing risk policy tests pass unchanged.
+
+---
+
+## Remaining: Phase 4.2 (pipeline)
 
 ### Pipeline → BasePipeline
 

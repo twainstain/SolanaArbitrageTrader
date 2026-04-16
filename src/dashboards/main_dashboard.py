@@ -812,6 +812,22 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         setTimeout(() => { loadScannerStatus(); loadChainExecStatus(); }, 300);
     }
 
+    // Native token symbol and approximate USD price per chain.
+    const CHAIN_NATIVE = {
+        ethereum: {symbol: 'ETH',   usd: 2300},
+        arbitrum: {symbol: 'ETH',   usd: 2300},
+        base:     {symbol: 'ETH',   usd: 2300},
+        optimism: {symbol: 'ETH',   usd: 2300},
+        polygon:  {symbol: 'MATIC', usd: 0.25},
+        bsc:      {symbol: 'BNB',   usd: 300},
+        avax:     {symbol: 'AVAX',  usd: 9.50},
+    };
+    const CHAIN_EXPLORER = {
+        ethereum: 'etherscan.io', arbitrum: 'arbiscan.io', base: 'basescan.org',
+        optimism: 'optimistic.etherscan.io', polygon: 'polygonscan.com',
+        bsc: 'bscscan.com', avax: 'snowtrace.io',
+    };
+
     async function loadWalletBalance() {
         try {
             const data = await fetchJSON('/wallet/balance');
@@ -822,27 +838,30 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             }
             const addr = data.address;
             const short = addr.slice(0,6) + '...' + addr.slice(-4);
+            const defaultExplorer = 'etherscan.io';
+            // Use the first available chain's explorer for the wallet link
+            const firstChain = Object.keys(data.balances)[0] || 'ethereum';
+            const walletExplorer = CHAIN_EXPLORER[firstChain] || defaultExplorer;
             let cards = `<div class="card">
                 <div class="card-title">Wallet</div>
-                <div class="card-value" style="font-size:16px"><a href="https://arbiscan.io/address/${addr}" target="_blank" style="color:#494fdf">${short}</a></div>
+                <div class="card-value" style="font-size:16px"><a href="https://${walletExplorer}/address/${addr}" target="_blank" style="color:#494fdf">${short}</a></div>
             </div>`;
-            let totalEth = 0;
+            let totalUsd = 0;
             for (const [chain, bal] of Object.entries(data.balances)) {
                 if (bal === null) continue;
-                totalEth += bal;
-                const usd = (bal * 2300).toFixed(2);
+                const native = CHAIN_NATIVE[chain] || {symbol: 'ETH', usd: 2300};
+                const usd = bal * native.usd;
+                totalUsd += usd;
                 const color = bal > 0.001 ? '#00a87e' : '#e23b4a';
                 cards += `<div class="card">
                     <div class="card-title">${chain} Balance</div>
-                    <div class="card-value" style="color:${color}">${bal.toFixed(6)} ETH</div>
-                    <div class="card-sub">~$${usd}</div>
+                    <div class="card-value" style="color:${color}">${bal.toFixed(6)} ${native.symbol}</div>
+                    <div class="card-sub">~$${usd.toFixed(2)}</div>
                 </div>`;
             }
-            const totalUsd = (totalEth * 2300).toFixed(2);
             cards += `<div class="card">
                 <div class="card-title">Total Balance</div>
-                <div class="card-value">${totalEth.toFixed(6)} ETH</div>
-                <div class="card-sub">~$${totalUsd}</div>
+                <div class="card-value">~$${totalUsd.toFixed(2)}</div>
             </div>`;
             grid.innerHTML = cards;
         } catch(e) { console.warn('Wallet balance load failed:', e); }

@@ -812,21 +812,38 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         setTimeout(() => { loadScannerStatus(); loadChainExecStatus(); }, 300);
     }
 
-    // Native token symbol and approximate USD price per chain.
+    // Native token symbol per chain and DeFi Llama coin IDs for live price fetch.
     const CHAIN_NATIVE = {
-        ethereum: {symbol: 'ETH',   usd: 2300},
-        arbitrum: {symbol: 'ETH',   usd: 2300},
-        base:     {symbol: 'ETH',   usd: 2300},
-        optimism: {symbol: 'ETH',   usd: 2300},
-        polygon:  {symbol: 'MATIC', usd: 0.25},
-        bsc:      {symbol: 'BNB',   usd: 300},
-        avax:     {symbol: 'AVAX',  usd: 9.50},
+        ethereum: {symbol: 'ETH',   coinId: 'coingecko:ethereum'},
+        arbitrum: {symbol: 'ETH',   coinId: 'coingecko:ethereum'},
+        base:     {symbol: 'ETH',   coinId: 'coingecko:ethereum'},
+        optimism: {symbol: 'ETH',   coinId: 'coingecko:ethereum'},
+        polygon:  {symbol: 'POL',   coinId: 'coingecko:polygon-ecosystem-token'},
+        bsc:      {symbol: 'BNB',   coinId: 'coingecko:binancecoin'},
+        avax:     {symbol: 'AVAX',  coinId: 'coingecko:avalanche-2'},
     };
     const CHAIN_EXPLORER = {
         ethereum: 'etherscan.io', arbitrum: 'arbiscan.io', base: 'basescan.org',
         optimism: 'optimistic.etherscan.io', polygon: 'polygonscan.com',
         bsc: 'bscscan.com', avax: 'snowtrace.io',
     };
+
+    // Live native token prices — fetched once on page load from DeFi Llama.
+    let nativePrices = {};
+    async function fetchNativePrices() {
+        try {
+            const ids = [...new Set(Object.values(CHAIN_NATIVE).map(n => n.coinId))].join(',');
+            const r = await fetch('https://coins.llama.fi/prices/current/' + ids);
+            const data = await r.json();
+            for (const [chain, info] of Object.entries(CHAIN_NATIVE)) {
+                const coin = data.coins?.[info.coinId];
+                if (coin) nativePrices[chain] = coin.price;
+            }
+        } catch(e) { console.warn('Price fetch failed, using fallbacks'); }
+    }
+    function getNativePrice(chain) {
+        return nativePrices[chain] || {ethereum:2300,arbitrum:2300,base:2300,optimism:2300,polygon:0.09,bsc:600,avax:9.5}[chain] || 0;
+    }
 
     async function loadWalletBalance() {
         try {
@@ -849,8 +866,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             let totalUsd = 0;
             for (const [chain, bal] of Object.entries(data.balances)) {
                 if (bal === null) continue;
-                const native = CHAIN_NATIVE[chain] || {symbol: 'ETH', usd: 2300};
-                const usd = bal * native.usd;
+                const native = CHAIN_NATIVE[chain] || {symbol: 'ETH'};
+                const usd = bal * getNativePrice(chain);
                 totalUsd += usd;
                 const color = bal > 0.001 ? '#00a87e' : '#e23b4a';
                 cards += `<div class="card">
@@ -926,6 +943,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     };
 
     async function init() {
+        // Fetch live native token prices before rendering balances.
+        await fetchNativePrices();
         await loadChainFilter();
         await Promise.all([loadStatus(), loadWindows(), loadChains(), loadOpportunities(), loadBarChart(), loadScannerStatus(), loadChainExecStatus()]);
         // Load wallet balance async (non-blocking, may be slow due to RPC calls)

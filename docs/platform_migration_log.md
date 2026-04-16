@@ -480,23 +480,148 @@ class SlotFreshnessRule:
 
 ---
 
-## Remaining: Phase 4.2 (pipeline)
+## Phase 4.2: Pipeline → BasePipeline Subclass (completed)
 
-### Pipeline → BasePipeline
+### What Changed
 
-Convert `CandidatePipeline` to subclass `BasePipeline` with abstract stage methods.
+| Item | Before | After |
+|------|--------|-------|
+| `src/pipeline/lifecycle.py` | 389-line standalone class | **Rewritten** — `CandidatePipeline(BasePipeline)` with extracted stage methods |
 
-**For other bots**: Each product implements its own stages:
+### Architecture
+
+CandidatePipeline now subclasses `trading_platform.pipeline.BasePipeline`:
+
+```
+BasePipeline (trading_platform)
+├── detect(candidate) → str         [abstract]
+├── price(id, candidate)            [abstract]
+├── evaluate_risk(candidate)        [abstract]
+├── on_approved(id, candidate)      [hook]
+├── on_rejected(id, reason, cand)   [hook]
+├── on_simulated(id, ok, reason)    [hook]
+├── on_submitted(id, ref)           [hook]
+├── on_verified(id, result)         [hook]
+└── process(candidate)              [orchestration — overridden by AT]
+
+CandidatePipeline (ArbitrageTrader)
+├── detect() → create_opportunity in DB
+├── price() → save_pricing in DB
+├── evaluate_risk() → call risk_policy.evaluate()
+├── on_approved() → update status to "approved"
+├── on_rejected() → handle simulation_approved vs rejected
+└── process() → overridden for DB batching + alert dispatching
+```
+
+AT overrides `process()` because it needs:
+- **DB batching** — stages 1-3 in a single transaction
+- **simulation_approved** status distinction (TP only has approved/rejected)
+- **AT Submitter** returns tuples, not `SubmissionRef`
+- **Alert dispatching** at simulation/execution stages
+
+New bots can use `BasePipeline.process()` directly if they don't have these legacy constraints.
+
+### How Other Bots Use This
+
+**SolanaTrader** — uses BasePipeline.process() directly (no override needed):
+
 ```python
+from trading_platform.pipeline import BasePipeline, PipelineResult
+from trading_platform.contracts import RiskVerdict, SubmissionRef, VerificationOutcome
+
 class SolanaPipeline(BasePipeline):
+    def __init__(self, repo, risk_policy, simulator=None, submitter=None, verifier=None):
+        super().__init__(simulator=simulator, submitter=submitter, verifier=verifier)
+        self.repo = repo
+        self.risk_policy = risk_policy
+
     def detect(self, swap) -> str:
         return self.repo.create_swap(swap.pair, swap.dex_a, swap.dex_b)
 
     def price(self, swap_id, swap) -> None:
-        self.repo.save_pricing(swap_id, swap.cost, swap.output)
+        self.repo.save_pricing(swap_id, swap.expected_profit, swap.fees)
 
     def evaluate_risk(self, swap) -> RiskVerdict:
         return self.risk_policy.evaluate(swap)
+
+    def on_approved(self, swap_id, swap) -> None:
+        self.repo.update_status(swap_id, "approved")
+
+    def on_rejected(self, swap_id, reason, swap) -> None:
+        self.repo.update_status(swap_id, "rejected")
+
+    def on_submitted(self, swap_id, ref: SubmissionRef) -> None:
+        self.repo.save_submission(swap_id, ref.reference_id)
+
+    def on_verified(self, swap_id, result: VerificationOutcome) -> None:
+        self.repo.save_result(swap_id, result.final_status, result.profit)
+
+# Usage — BasePipeline.process() handles all orchestration:
+pipeline = SolanaPipeline(repo, risk_policy, simulator=sim, submitter=sub, verifier=ver)
+result = pipeline.process(swap_opportunity)
+# result.candidate_id, result.final_status, result.net_profit, result.timings
 ```
 
-These are the highest-effort items. Recommend deferring until after SolanaTrader or PolymarketTrader actively needs the shared pipeline.
+**PolymarketTrader** — similar pattern:
+
+```python
+class PolymarketPipeline(BasePipeline):
+    def detect(self, bet) -> str:
+        return self.repo.create_bet(bet.market_id, bet.outcome, bet.size)
+
+    def price(self, bet_id, bet) -> None:
+        self.repo.save_odds(bet_id, bet.odds, bet.edge_pct, bet.kelly_size)
+
+    def evaluate_risk(self, bet) -> RiskVerdict:
+        return self.risk_policy.evaluate(bet, max_exposure=self.max_exposure)
+
+    def on_submitted(self, bet_id, ref: SubmissionRef) -> None:
+        self.repo.save_order(bet_id, ref.reference_id)  # CLOB order ID
+```
+
+### Key Design Decision
+
+> **AT overrides `process()`. New bots shouldn't need to.**
+>
+> AT's pipeline was built before the platform, so it has EVM-specific concerns
+> (DB batching, tuple Submitters, simulation_approved status) that don't fit
+> the generic flow. New bots built on the platform from day one can use
+> `BasePipeline.process()` directly — it handles timing, stage sequencing,
+> and dry-run logic out of the box.
+
+### Tests
+
+949/949 pass. Zero regressions.
+
+---
+
+## Migration Complete
+
+### Final Scorecard
+
+| Phase | Modules | Pattern | Lines Saved |
+|:-----:|---------|---------|:-----------:|
+| 1 | circuit_breaker, retry | Adapter | ~250 |
+| 2 | dispatcher, queue | Subclass + Adapter | ~140 |
+| 3 | metrics, config, repo, backends | Skipped (product-specific) | 0 |
+| 4.1 | risk policy | Pluggable rules | Reorganized (net +16) |
+| 4.2 | pipeline | BasePipeline subclass | Reorganized (net -10) |
+| **Total** | **6 modules migrated** | **3 patterns** | **~390 lines** |
+
+### Files Using trading_platform
+
+```
+src/platform_adapters.py          — CircuitBreaker, RetryPolicy, CandidateQueue adapters
+src/alerting/dispatcher.py        — subclasses TP AlertDispatcher
+src/risk/policy.py                — RiskPolicy delegates to rule chain
+src/risk/rules.py                 — 9 rules following TP RiskRule protocol
+src/pipeline/lifecycle.py          — CandidatePipeline subclasses TP BasePipeline
+```
+
+### Files Deleted (replaced by trading_platform)
+
+```
+src/risk/circuit_breaker.py       — → trading_platform.risk.circuit_breaker
+src/risk/retry.py                 — → trading_platform.risk.retry
+src/pipeline/queue.py             — → trading_platform.pipeline.queue
+```

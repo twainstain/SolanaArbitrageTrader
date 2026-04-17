@@ -35,6 +35,10 @@ logger = logging.getLogger(__name__)
 D = Decimal
 
 
+class RateLimitedError(Exception):
+    """Jupiter returned HTTP 429 for this pair."""
+
+
 class SolanaMarket:
     """Jupiter-backed market source.
 
@@ -63,6 +67,12 @@ class SolanaMarket:
         )
         self._session = requests.Session()
         self._session.headers.update({"Accept": "application/json"})
+        # Per-pair 429 cooldown (Phase 2d): Jupiter's free tier rate-limits
+        # aggressively (~1 req/s). When a pair returns 429, skip it for this
+        # many seconds so the remaining pairs still get queried each scan and
+        # the rate-limited one naturally backs off.
+        self._rate_limit_cooldown_seconds: float = 60.0
+        self._pair_cooldown_until: dict[str, float] = {}
 
     @staticmethod
     def _build_pairs(config: BotConfig) -> list[PairConfig]:
@@ -85,13 +95,25 @@ class SolanaMarket:
 
         Returns [] on total failure (e.g. Jupiter unreachable).  Per-pair
         failures log a warning and continue — partial data is better than no
-        data for scanner work.
+        data for scanner work. Pairs in 429-cooldown are silently skipped.
         """
+        now = time.time()
         out: list[MarketQuote] = []
         for pair_cfg in self.pairs:
+            cooldown_until = self._pair_cooldown_until.get(pair_cfg.pair, 0.0)
+            if cooldown_until > now:
+                continue
             try:
                 quotes = self._quotes_for_pair(pair_cfg)
                 out.extend(quotes)
+            except RateLimitedError:
+                self._pair_cooldown_until[pair_cfg.pair] = (
+                    now + self._rate_limit_cooldown_seconds
+                )
+                logger.info(
+                    "[jupiter] %s rate-limited → cooling down %.0fs",
+                    pair_cfg.pair, self._rate_limit_cooldown_seconds,
+                )
             except Exception as exc:
                 logger.warning(
                     "[jupiter] quote fetch failed for %s: %s",
@@ -162,7 +184,15 @@ class SolanaMarket:
         url = f"{self.base_url}/quote"
         try:
             resp = self._session.get(url, params=params, timeout=self.timeout)
+            if resp.status_code == 429:
+                # Let the caller set a per-pair cooldown so subsequent pairs
+                # in the scan still run.
+                raise RateLimitedError(
+                    f"429 from Jupiter: {input_mint[:6]}→{output_mint[:6]}"
+                )
             resp.raise_for_status()
+        except RateLimitedError:
+            raise
         except requests.RequestException as exc:
             logger.debug("[jupiter] %s → %s (direct=%s) failed: %s",
                           input_mint[:6], output_mint[:6], only_direct, exc)

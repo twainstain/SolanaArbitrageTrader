@@ -103,3 +103,112 @@ def test_zero_output_rejected(tmp_path):
 
     # Both responses are zero-output; the adapter logs the error and returns [].
     assert market.get_quotes() == []
+
+
+# ---------------------------------------------------------------------------
+# Rate-limit cooldown (Phase 2d).
+# ---------------------------------------------------------------------------
+
+
+def test_429_puts_pair_in_cooldown(tmp_path):
+    from unittest.mock import patch
+    from market.solana_market import RateLimitedError
+
+    cfg = _cfg(tmp_path)
+    # Two pairs — the 429 on the first should NOT stop the second from running.
+    from core.config import PairConfig
+    cfg2 = _cfg(tmp_path)
+    # Monkey-patch two pairs onto the market.
+    market = SolanaMarket(cfg)
+    market.pairs = [
+        PairConfig("SOL/USDC", "SOL", "USDC", Decimal("1")),
+        PairConfig("USDC/USDT", "USDC", "USDT", Decimal("100")),
+    ]
+
+    call_log: list[tuple] = []
+
+    def fake_get(url, params=None, timeout=None):
+        in_mint = params["inputMint"]
+        call_log.append(in_mint[:6])
+        r = MagicMock()
+        # 429 only when the input mint is SOL's.
+        r.status_code = 429 if in_mint.startswith("So1111") else 200
+        r.raise_for_status = MagicMock()
+        r.json = MagicMock(return_value={
+            "outAmount": "99000000",           # 99 USDT back for 100 USDC
+            "inAmount": params["amount"],
+            "priceImpactPct": "0.0",
+            "slippageBps": 0,
+            "platformFee": None,
+            "routePlan": [{"swapInfo": {"label": "Orca", "feeAmount": "0", "feeBps": "1"}}],
+        })
+        return r
+
+    with patch.object(market._session, "get", side_effect=fake_get):
+        quotes = market.get_quotes()
+
+    # SOL/USDC 429'd; USDC/USDT succeeded. Both routes were attempted for
+    # each pair; the first 429 short-circuits SOL/USDC's second call (cooldown).
+    assert market._pair_cooldown_until.get("SOL/USDC", 0) > 0
+    # USDC/USDT isn't in cooldown.
+    assert "USDC/USDT" not in market._pair_cooldown_until
+    # USDC/USDT emitted 2 quotes (Best + Direct).
+    usdc_usdt_quotes = [q for q in quotes if q.pair == "USDC/USDT"]
+    assert len(usdc_usdt_quotes) == 2
+
+
+def test_pair_in_cooldown_is_skipped(tmp_path):
+    from unittest.mock import patch
+    import time as _time
+
+    cfg = _cfg(tmp_path)
+    market = SolanaMarket(cfg)
+    # Put SOL/USDC in cooldown until the heat death of the test.
+    market._pair_cooldown_until["SOL/USDC"] = _time.time() + 10_000
+
+    call_log: list = []
+    def fake_get(url, params=None, timeout=None):
+        call_log.append(params["inputMint"])
+        r = MagicMock()
+        r.status_code = 200
+        r.raise_for_status = MagicMock()
+        r.json = MagicMock(return_value={
+            "outAmount": "90000000", "inAmount": "1000000000",
+            "priceImpactPct": "0.0", "slippageBps": 0, "platformFee": None,
+            "routePlan": [{"swapInfo": {"label": "Orca", "feeAmount": "0", "feeBps": "1"}}],
+        })
+        return r
+
+    with patch.object(market._session, "get", side_effect=fake_get):
+        quotes = market.get_quotes()
+
+    # No HTTP calls were made — the cooled-down pair was skipped.
+    assert call_log == []
+    assert quotes == []
+
+
+def test_cooldown_expires_naturally(tmp_path):
+    from unittest.mock import patch
+    import time as _time
+
+    cfg = _cfg(tmp_path)
+    market = SolanaMarket(cfg)
+    # Set cooldown in the past → should be ignored.
+    market._pair_cooldown_until["SOL/USDC"] = _time.time() - 1
+
+    def fake_get(url, params=None, timeout=None):
+        r = MagicMock()
+        r.status_code = 200
+        r.raise_for_status = MagicMock()
+        r.json = MagicMock(return_value={
+            "outAmount": "90000000", "inAmount": "1000000000",
+            "priceImpactPct": "0.0", "slippageBps": 0, "platformFee": None,
+            "routePlan": [{"swapInfo": {"label": "Orca", "feeAmount": "0", "feeBps": "1"}}],
+        })
+        return r
+
+    with patch.object(market._session, "get", side_effect=fake_get):
+        quotes = market.get_quotes()
+
+    # Cooldown had expired → 2 quotes (Best + Direct) produced.
+    assert len(quotes) == 2

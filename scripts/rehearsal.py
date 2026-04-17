@@ -183,15 +183,13 @@ def build_and_simulate(config: BotConfig, best_opp: Any) -> bool:
         _fail(f"getLatestBlockhash error: {exc}")
         return False
 
-    # No ALT fetch in this rehearsal — Jupiter /swap-instructions returns ALT
-    # pubkeys and the compile requires the account bodies. For a full
-    # rehearsal with real ALTs we'd fetch + decode via RPC. Here we pass an
-    # empty list; the message-compile step will report any ALTs the tx
-    # requires that we didn't supply, which is an acceptable dry-run signal.
-    def _alt_resolver_stub(keys):
+    # Real ALT fetcher wired up (Phase 3c) — decodes on-chain LUT accounts
+    # for each address Jupiter's /swap-instructions returns.
+    def _alt_resolver(keys):
+        resolved = rpc.get_address_lookup_tables(keys)
         if keys:
-            _warn(f"rehearsal using empty ALTs; {len(keys)} referenced")
-        return []
+            _ok(f"fetched {len(resolved)}/{len(keys)} ALTs")
+        return resolved
 
     try:
         tx = builder.build_atomic_tx(
@@ -199,7 +197,7 @@ def build_and_simulate(config: BotConfig, best_opp: Any) -> bool:
             user_pubkey=wallet_pubkey,
             priority_fee_lamports=int(config.priority_fee_lamports),
             recent_blockhash=blockhash,
-            alt_resolver=_alt_resolver_stub,
+            alt_resolver=_alt_resolver,
         )
     except Exception as exc:
         _fail(f"build_atomic_tx failed: {exc}")

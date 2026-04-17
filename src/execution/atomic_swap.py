@@ -185,19 +185,25 @@ class AtomicSwapBuilder:
         user_pubkey: str,
         priority_fee_lamports: int,
         recent_blockhash: Hash,
-        alt_resolver,
+        alt_resolver=None,
     ) -> VersionedTransaction:
         """Compile both legs into one unsigned VersionedTransaction.
 
-        ``alt_resolver`` is a callable ``(list[str]) -> list[AddressLookupTableAccount]``
-        that fetches ALT accounts for the given pubkey strings. Passed in
-        so tests can mock the RPC layer; production wires it to an
-        ``SolanaRPC.get_address_lookup_tables`` helper (Phase 3c).
+        ``alt_resolver`` is a callable
+        ``(list[str]) -> list[AddressLookupTableAccount]`` that fetches ALT
+        accounts for the given pubkey strings. Pass an explicit mock in
+        tests. In production, leaving this as ``None`` uses
+        ``SolanaRPC.get_address_lookup_tables`` as the default (Phase 3c).
 
         Compute-budget priority-fee instructions from both legs are
-        coalesced into one pair up front (max CU limit, max priority fee)
-        so we don't double-pay.
+        coalesced into one set (leg A's) so we don't double-pay.
         """
+        if alt_resolver is None:
+            # Late import to keep this module importable in tests that
+            # don't hit the RPC package.
+            from market.solana_rpc import SolanaRPC as _SolanaRPC
+            _rpc = _SolanaRPC()
+            alt_resolver = _rpc.get_address_lookup_tables
         raw_a = self._fetch_swap_instructions(plan.leg_a_quote, user_pubkey, priority_fee_lamports)
         raw_b = self._fetch_swap_instructions(plan.leg_b_quote, user_pubkey, priority_fee_lamports)
 

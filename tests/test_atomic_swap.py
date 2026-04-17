@@ -247,3 +247,64 @@ class BuildAtomicTxTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# Default ALT resolver (Phase 3c).
+# ---------------------------------------------------------------------------
+
+
+class DefaultAltResolverTests(unittest.TestCase):
+    def test_none_resolver_uses_solana_rpc(self):
+        """When alt_resolver=None is passed, the builder wires SolanaRPC.get_address_lookup_tables."""
+        from unittest.mock import patch
+        import execution.atomic_swap as atomic_swap
+        builder = AtomicSwapBuilder()
+
+        # Prepare /swap-instructions mocks identical to BuildAtomicTxTests but
+        # with only one ALT key so we can verify the default resolver was
+        # called with the right keys.
+        leg_a = _fake_swap_ix_body(
+            setup_tags=[b"A"], swap_tag=b"AS", cleanup_tag=b"AC",
+            alt_keys=["So11111111111111111111111111111111111111112"],
+        )
+        leg_b = _fake_swap_ix_body(
+            setup_tags=[b"B"], swap_tag=b"BS", cleanup_tag=None,
+            alt_keys=["EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"],
+        )
+        resp_a = MagicMock(); resp_a.json.return_value = leg_a; resp_a.raise_for_status = MagicMock()
+        resp_b = MagicMock(); resp_b.json.return_value = leg_b; resp_b.raise_for_status = MagicMock()
+        builder._session.post = MagicMock(side_effect=[resp_a, resp_b])
+
+        plan = AtomicSwapPlan(
+            leg_a_quote=_fake_quote(90_000_000),
+            leg_b_quote=_fake_quote(1_005_000_000),
+            leg_a=LegParams("SOL", "USDC", D("1"), 15),
+            leg_b=LegParams("USDC", "SOL", D("90"), 15),
+        )
+
+        called_with_keys: list[list[str]] = []
+        def _fake_alt_fetch(keys):
+            called_with_keys.append(keys)
+            return []
+
+        # Patch the SolanaRPC class so when the builder imports it and
+        # instantiates, we intercept get_address_lookup_tables.
+        class _FakeRPC:
+            def __init__(self, *args, **kwargs): pass
+            def get_address_lookup_tables(self, keys):
+                return _fake_alt_fetch(keys)
+
+        with patch("market.solana_rpc.SolanaRPC", _FakeRPC):
+            builder.build_atomic_tx(
+                plan=plan, user_pubkey=USER, priority_fee_lamports=10_000,
+                recent_blockhash=Hash.default(),
+                # alt_resolver omitted → default path exercises SolanaRPC
+            )
+
+        self.assertEqual(len(called_with_keys), 1)
+        # Both ALT keys forwarded after de-duplication (two unique here).
+        self.assertEqual(set(called_with_keys[0]), {
+            "So11111111111111111111111111111111111111112",
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        })

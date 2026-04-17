@@ -132,12 +132,73 @@ class SolanaRPC:
         """Current slot — useful for health checks."""
         return int(self._call("getSlot", []))
 
+    def get_address_lookup_tables(self, keys: list[str]):
+        """Fetch + decode Address Lookup Tables by pubkey (Phase 3c).
+
+        Returns a list of ``AddressLookupTableAccount`` in the same order
+        as ``keys``. Keys that don't resolve to an on-chain ALT (missing
+        account, wrong owner, or data too short) are dropped silently —
+        the caller sees ``len(result) <= len(keys)``.
+
+        Lets ``execution.atomic_swap.AtomicSwapBuilder.build_atomic_tx``
+        receive real ALT account bodies when compiling a MessageV0 rather
+        than the empty-list stub used in rehearsal.
+        """
+        from solders.address_lookup_table_account import AddressLookupTableAccount
+        from solders.pubkey import Pubkey
+
+        if not keys:
+            return []
+        accounts = self.get_multiple_accounts(keys)
+        result = []
+        for key, acc in zip(keys, accounts):
+            if acc is None or acc.owner != _ALT_PROGRAM_ID:
+                logger.debug(
+                    "[rpc] skipping ALT %s — owner=%s",
+                    key[:8], acc.owner if acc else "None",
+                )
+                continue
+            addresses = parse_alt_addresses(acc.data)
+            if not addresses:
+                # An empty table is valid but useless; drop to keep the
+                # atomic-swap compile from allocating a no-op LUT lookup.
+                continue
+            try:
+                alt_key = Pubkey.from_string(key)
+            except ValueError:
+                continue
+            result.append(AddressLookupTableAccount(key=alt_key, addresses=addresses))
+        return result
+
 
 # ---------------------------------------------------------------------------
 # SPL Token Account decoding (Raydium uses SPL token vaults for reserves)
 # ---------------------------------------------------------------------------
 
 _SPL_TOKEN_ACCOUNT_LEN = 165
+
+
+# Address Lookup Table program + account layout (Phase 3c).
+# On-chain ALT account: first 56 bytes are meta (typ, deactivation_slot,
+# last_extended_slot, start_index, authority Option, padding), followed by
+# a packed array of Pubkeys (32 bytes each).
+_ALT_PROGRAM_ID = "AddressLookupTab1e1111111111111111111111111"
+_LOOKUP_TABLE_META_SIZE = 56
+
+
+def parse_alt_addresses(data: bytes):
+    """Extract the Pubkey array from an Address Lookup Table account's data.
+
+    Returns an empty list if the data is shorter than the header or its
+    trailing bytes aren't a whole multiple of 32.
+    """
+    from solders.pubkey import Pubkey
+    if len(data) < _LOOKUP_TABLE_META_SIZE:
+        return []
+    tail = data[_LOOKUP_TABLE_META_SIZE:]
+    if len(tail) % 32 != 0:
+        return []
+    return [Pubkey.from_bytes(tail[i:i + 32]) for i in range(0, len(tail), 32)]
 
 
 def parse_spl_token_amount(data: bytes) -> int:

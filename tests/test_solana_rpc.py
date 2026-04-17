@@ -79,3 +79,112 @@ def test_parse_spl_token_amount():
 def test_parse_spl_token_amount_too_short():
     with pytest.raises(ValueError):
         parse_spl_token_amount(b"\x00" * 32)
+
+
+# ---------------------------------------------------------------------------
+# Address Lookup Table fetcher (Phase 3c).
+# ---------------------------------------------------------------------------
+
+from unittest.mock import MagicMock, patch
+from solders.pubkey import Pubkey
+
+from market.solana_rpc import (
+    AccountInfo,
+    SolanaRPC,
+    parse_alt_addresses,
+    _LOOKUP_TABLE_META_SIZE,
+    _ALT_PROGRAM_ID,
+)
+
+
+def _fake_alt_bytes(addresses: list[Pubkey]) -> bytes:
+    """Build a valid-enough ALT account body for parser tests."""
+    header = bytes(_LOOKUP_TABLE_META_SIZE)
+    return header + b"".join(bytes(p) for p in addresses)
+
+
+class TestParseAltAddresses:
+    def test_empty_when_data_shorter_than_header(self):
+        assert parse_alt_addresses(b"\x00" * 10) == []
+
+    def test_empty_table_returns_empty(self):
+        assert parse_alt_addresses(bytes(_LOOKUP_TABLE_META_SIZE)) == []
+
+    def test_decodes_packed_addresses(self):
+        addrs = [Pubkey.new_unique() for _ in range(3)]
+        parsed = parse_alt_addresses(_fake_alt_bytes(addrs))
+        assert parsed == addrs
+
+    def test_partial_pubkey_at_tail_returns_empty(self):
+        addrs = [Pubkey.new_unique()]
+        data = _fake_alt_bytes(addrs) + b"\x00\x01\x02"    # 3 extra bytes
+        assert parse_alt_addresses(data) == []
+
+
+class TestGetAddressLookupTables:
+    def test_empty_input_returns_empty(self):
+        rpc = SolanaRPC(url="http://localhost/nope")
+        rpc.get_multiple_accounts = MagicMock(return_value=[])
+        assert rpc.get_address_lookup_tables([]) == []
+
+    def test_missing_account_is_skipped(self):
+        rpc = SolanaRPC(url="http://localhost/nope")
+        rpc.get_multiple_accounts = MagicMock(return_value=[None])
+        assert rpc.get_address_lookup_tables(["11111111111111111111111111111111"]) == []
+
+    def test_wrong_owner_is_skipped(self):
+        rpc = SolanaRPC(url="http://localhost/nope")
+        rpc.get_multiple_accounts = MagicMock(return_value=[
+            AccountInfo(
+                pubkey="11111111111111111111111111111111",
+                owner="22222222222222222222222222222222",      # not ALT program
+                lamports=0,
+                data=_fake_alt_bytes([Pubkey.new_unique()]),
+            ),
+        ])
+        assert rpc.get_address_lookup_tables(["11111111111111111111111111111111"]) == []
+
+    def test_valid_alt_is_returned(self):
+        rpc = SolanaRPC(url="http://localhost/nope")
+        addrs = [Pubkey.new_unique() for _ in range(2)]
+        alt_key = "11111111111111111111111111111111"
+        rpc.get_multiple_accounts = MagicMock(return_value=[
+            AccountInfo(
+                pubkey=alt_key,
+                owner=_ALT_PROGRAM_ID,
+                lamports=0,
+                data=_fake_alt_bytes(addrs),
+            ),
+        ])
+        result = rpc.get_address_lookup_tables([alt_key])
+        assert len(result) == 1
+        assert str(result[0].key) == alt_key
+        assert list(result[0].addresses) == addrs
+
+    def test_mixed_keys_drop_invalid_keep_valid(self):
+        rpc = SolanaRPC(url="http://localhost/nope")
+        good_addrs = [Pubkey.new_unique()]
+        rpc.get_multiple_accounts = MagicMock(return_value=[
+            None,                                               # missing
+            AccountInfo(
+                pubkey="11111111111111111111111111111111",
+                owner="OTHER",
+                lamports=0,
+                data=_fake_alt_bytes([Pubkey.new_unique()]),
+            ),                                                   # wrong owner
+            AccountInfo(
+                pubkey="11111111111111111111111111111111",
+                owner=_ALT_PROGRAM_ID,
+                lamports=0,
+                data=_fake_alt_bytes(good_addrs),
+            ),                                                   # valid
+            AccountInfo(
+                pubkey="11111111111111111111111111111111",
+                owner=_ALT_PROGRAM_ID,
+                lamports=0,
+                data=bytes(_LOOKUP_TABLE_META_SIZE),              # empty ALT → drop
+            ),
+        ])
+        result = rpc.get_address_lookup_tables(["k1", "k2", "11111111111111111111111111111111", "k4"])
+        assert len(result) == 1
+        assert list(result[0].addresses) == good_addrs

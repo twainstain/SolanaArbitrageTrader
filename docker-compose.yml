@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   # Postgres database — lives on the same EC2 as the bot.  Data persists in
   # the named volume `pg-data`.  Daily S3 backup via scripts/backup_to_s3.sh.

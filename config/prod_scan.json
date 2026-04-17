@@ -38,6 +38,27 @@
       "quote_asset": "USDC",
       "trade_size": 0.5,
       "max_exposure": 5.0
+    },
+    {
+      "pair": "JUP/SOL",
+      "base_asset": "JUP",
+      "quote_asset": "SOL",
+      "trade_size": 100.0,
+      "max_exposure": 2000.0
+    },
+    {
+      "pair": "BONK/SOL",
+      "base_asset": "BONK",
+      "quote_asset": "SOL",
+      "trade_size": 1000000.0,
+      "max_exposure": 50000000.0
+    },
+    {
+      "pair": "BONK/USDC",
+      "base_asset": "BONK",
+      "quote_asset": "USDC",
+      "trade_size": 1000000.0,
+      "max_exposure": 50000000.0
     }
   ],
   "venues": [

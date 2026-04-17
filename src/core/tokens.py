@@ -34,6 +34,10 @@ TOKENS: dict[str, Token] = {
     "MSOL":    Token("mSOL",    "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So",  9),
     "JITOSOL": Token("jitoSOL", "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn", 9),
     "BSOL":    Token("bSOL",    "bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1",  9),
+    # Solana-native assets surfaced by `scripts/discover_pairs.py` as the
+    # deepest non-LST pools (volume × dex_count × blue-chip).
+    "JUP":     Token("JUP",     "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN",  6),
+    "BONK":    Token("BONK",    "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",  5),
 }
 
 

@@ -308,3 +308,106 @@ class DefaultAltResolverTests(unittest.TestCase):
             "So11111111111111111111111111111111111111112",
             "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
         })
+
+
+# ---------------------------------------------------------------------------
+# Phase 3d — dexes filter routes Jupiter through a specific DEX only.
+# ---------------------------------------------------------------------------
+
+
+class DexesFilterTests(unittest.TestCase):
+    def test_venue_to_jupiter_dexes_known_venues(self):
+        from execution.atomic_swap import venue_to_jupiter_dexes
+        assert venue_to_jupiter_dexes("Jupiter-Best") is None
+        assert venue_to_jupiter_dexes("Jupiter-Direct") is None
+        assert venue_to_jupiter_dexes("Raydium-SOL/USDC") == ["Raydium", "Raydium CLMM"]
+        assert venue_to_jupiter_dexes("Orca-SOL/USDC") == ["Whirlpool", "Orca V2"]
+        assert venue_to_jupiter_dexes("Meteora-SOL/USDC") == ["Meteora", "Meteora DLMM"]
+        assert venue_to_jupiter_dexes("Phoenix-SOL/USDC") == ["Phoenix"]
+
+    def test_venue_to_jupiter_dexes_unknown_returns_none(self):
+        from execution.atomic_swap import venue_to_jupiter_dexes
+        assert venue_to_jupiter_dexes("") is None
+        assert venue_to_jupiter_dexes("BogusDEX-SOL/USDC") is None
+
+    def test_leg_params_carries_dexes_through_to_quote(self):
+        """plan_two_leg must pass ``leg.dexes`` into Jupiter's quote call."""
+        builder = AtomicSwapBuilder()
+        builder.jupiter = MagicMock()
+        builder.jupiter.quote.side_effect = [
+            _fake_quote(out_amount=90_000_000, in_amount=1_000_000_000),
+            _fake_quote(out_amount=1_005_000_000, in_amount=90_000_000),
+        ]
+        builder.plan_two_leg(
+            LegParams("SOL", "USDC", D("1"), 15, dexes=["Whirlpool"]),
+            LegParams("USDC", "SOL", D("0"), 15, dexes=["Raydium"]),
+        )
+        # Leg A received Whirlpool, leg B received Raydium — different filters.
+        leg_a_kwargs = builder.jupiter.quote.call_args_list[0].kwargs
+        leg_b_kwargs = builder.jupiter.quote.call_args_list[1].kwargs
+        assert leg_a_kwargs["dexes"] == ["Whirlpool"]
+        assert leg_b_kwargs["dexes"] == ["Raydium"]
+
+    def test_leg_without_dexes_passes_none(self):
+        """Backward-compat: leg with no dexes filter → Jupiter unconstrained."""
+        builder = AtomicSwapBuilder()
+        builder.jupiter = MagicMock()
+        builder.jupiter.quote.side_effect = [
+            _fake_quote(out_amount=90_000_000),
+            _fake_quote(out_amount=1_005_000_000),
+        ]
+        builder.plan_two_leg(
+            LegParams("SOL", "USDC", D("1"), 15),
+            LegParams("USDC", "SOL", D("0"), 15),
+        )
+        assert builder.jupiter.quote.call_args_list[0].kwargs["dexes"] is None
+        assert builder.jupiter.quote.call_args_list[1].kwargs["dexes"] is None
+
+
+class JupiterSwapDexesQueryTests(unittest.TestCase):
+    def test_dexes_parameter_joined_and_sent(self):
+        """JupiterSwapBuilder.quote includes a comma-joined `dexes` query param
+        when dexes=['A', 'B'] is passed."""
+        from execution.jupiter_swap import JupiterSwapBuilder
+        j = JupiterSwapBuilder()
+        captured: dict = {}
+
+        def _fake_get(url, params=None, timeout=None):
+            captured["params"] = dict(params)
+            r = MagicMock()
+            r.raise_for_status = MagicMock()
+            r.json = MagicMock(return_value={
+                "inAmount": "1000000000", "outAmount": "90000000",
+                "priceImpactPct": "0.0", "routePlan": [],
+            })
+            return r
+
+        j._session.get = MagicMock(side_effect=_fake_get)
+        j.quote(
+            input_symbol="SOL", output_symbol="USDC",
+            input_amount_human=1, slippage_bps=15,
+            dexes=["Raydium", "Whirlpool"],
+        )
+        # Comma-joined per Jupiter's API spec.
+        assert captured["params"]["dexes"] == "Raydium,Whirlpool"
+
+    def test_dexes_absent_omits_param(self):
+        """Default None → no ``dexes`` query param (full aggregator)."""
+        from execution.jupiter_swap import JupiterSwapBuilder
+        j = JupiterSwapBuilder()
+        captured: dict = {}
+
+        def _fake_get(url, params=None, timeout=None):
+            captured["params"] = dict(params)
+            r = MagicMock()
+            r.raise_for_status = MagicMock()
+            r.json = MagicMock(return_value={
+                "inAmount": "1000000000", "outAmount": "90000000",
+                "priceImpactPct": "0.0", "routePlan": [],
+            })
+            return r
+
+        j._session.get = MagicMock(side_effect=_fake_get)
+        j.quote(input_symbol="SOL", output_symbol="USDC",
+                input_amount_human=1, slippage_bps=15)
+        assert "dexes" not in captured["params"]

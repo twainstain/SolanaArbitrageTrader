@@ -62,12 +62,20 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class LegParams:
-    """Inputs for one Jupiter leg."""
+    """Inputs for one Jupiter leg.
+
+    ``dexes`` (Phase 3d): restrict Jupiter to route through only the
+    named DEX(es). Use ``venue_to_jupiter_dexes()`` to convert a
+    scanner-emitted venue name (e.g. "Raydium-SOL/USDC") into the right
+    Jupiter-side label(s). Leaving this None keeps full-aggregator
+    behavior, which is what Phase 3b shipped by default.
+    """
     input_symbol: str
     output_symbol: str
     input_amount_human: Decimal
     slippage_bps: int
     only_direct_routes: bool = False
+    dexes: list[str] | None = None
 
 
 @dataclass
@@ -142,6 +150,7 @@ class AtomicSwapBuilder:
             input_amount_human=leg_a.input_amount_human,
             slippage_bps=leg_a.slippage_bps,
             only_direct_routes=leg_a.only_direct_routes,
+            dexes=leg_a.dexes,
         )
         # Convert leg A's native out_amount to the human amount leg B
         # should request. Keep full precision via Decimal.
@@ -155,6 +164,7 @@ class AtomicSwapBuilder:
             input_amount_human=leg_a_out_human,
             slippage_bps=leg_b.slippage_bps,
             only_direct_routes=leg_b.only_direct_routes,
+            dexes=leg_b.dexes,
         )
         if leg_a.output_symbol.upper() != leg_b.input_symbol.upper():
             raise ValueError(
@@ -168,6 +178,7 @@ class AtomicSwapBuilder:
             input_amount_human=leg_b_chained.input_amount_human,
             slippage_bps=leg_b_chained.slippage_bps,
             only_direct_routes=leg_b_chained.only_direct_routes,
+            dexes=leg_b_chained.dexes,
         )
 
         return AtomicSwapPlan(
@@ -287,6 +298,34 @@ def _parse_swap_instructions(body: dict[str, Any]) -> _RawSwapInstructions:
         address_lookup_table_addresses=list(body.get("addressLookupTableAddresses") or []),
         prioritization_fee_lamports=int(body.get("prioritizationFeeLamports") or 0),
     )
+
+
+def venue_to_jupiter_dexes(venue: str) -> list[str] | None:
+    """Map a scanner-emitted venue name to Jupiter's ``dexes`` filter values.
+
+    Scanner venues look like:
+      Jupiter-Best         → no filter (full aggregator)
+      Jupiter-Direct       → no filter (onlyDirectRoutes handles single-hop)
+      Raydium-SOL/USDC     → ["Raydium"]
+      Orca-SOL/USDC        → ["Whirlpool"]  (Orca v2 concentrated liquidity)
+      Meteora-<pair>       → ["Meteora", "Meteora DLMM"]
+      Phoenix-<pair>       → ["Phoenix"]
+
+    Returns None when the venue is Jupiter's own aggregator (use full
+    routing) or unknown (don't over-constrain — let Jupiter decide).
+    """
+    if not venue:
+        return None
+    head = venue.split("-", 1)[0].lower()
+    mapping = {
+        "jupiter": None,                                # full aggregator
+        "raydium": ["Raydium", "Raydium CLMM"],         # AMM V4 + CLMM
+        "orca": ["Whirlpool", "Orca V2"],
+        "meteora": ["Meteora", "Meteora DLMM"],
+        "phoenix": ["Phoenix"],
+        "lifinity": ["Lifinity V2"],
+    }
+    return mapping.get(head)
 
 
 def _parse_instruction(raw: dict[str, Any]) -> Instruction:

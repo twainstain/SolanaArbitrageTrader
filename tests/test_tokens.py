@@ -46,3 +46,24 @@ def test_native_unit_conversion():
 def test_unknown_symbol_raises():
     with pytest.raises(KeyError):
         get_token("NOTATHING")
+
+
+# ---------------------------------------------------------------------------
+# New Solana-native tokens added from `scripts/discover_pairs.py` results.
+# ---------------------------------------------------------------------------
+
+
+def test_jup_and_bonk_registered():
+    from core.tokens import get_token, is_known
+    assert is_known("JUP")
+    assert is_known("BONK")
+    # Resolve symbol → mint.
+    jup = get_token("JUP")
+    assert jup.symbol == "JUP"
+    assert jup.decimals == 6
+    assert jup.mint.startswith("JUP")   # canonical JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN
+    bonk = get_token("BONK")
+    assert bonk.symbol == "BONK"
+    assert bonk.decimals == 5
+    # BONK mint starts with "Dez" on mainnet.
+    assert bonk.mint.startswith("Dez")

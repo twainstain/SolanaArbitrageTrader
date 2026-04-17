@@ -143,6 +143,12 @@ def build_and_simulate(config: BotConfig, best_opp: Any) -> bool:
 
     builder = AtomicSwapBuilder(jupiter=JupiterSwapBuilder())
 
+    # Phase 3d: map the scanner's picked venues to Jupiter's `dexes` filter
+    # so each leg is routed through the DEX the scanner actually saw the
+    # quote from. When the scanner picks Jupiter-Best / Jupiter-Direct the
+    # mapper returns None and Jupiter's full aggregator runs.
+    from execution.atomic_swap import venue_to_jupiter_dexes
+
     # Leg A: buy base via buy_venue's route (use only_direct toggle to pick the cheap leg).
     leg_a = LegParams(
         input_symbol=best_opp.pair.split("/")[1],  # quote → base
@@ -150,6 +156,7 @@ def build_and_simulate(config: BotConfig, best_opp: Any) -> bool:
         input_amount_human=D(str(config.trade_size)) * D(str(best_opp.buy_price)),
         slippage_bps=int(config.slippage_bps),
         only_direct_routes=("Direct" in best_opp.buy_venue),
+        dexes=venue_to_jupiter_dexes(best_opp.buy_venue),
     )
     # Leg B: sell base via sell_venue's route.
     leg_b = LegParams(
@@ -158,6 +165,7 @@ def build_and_simulate(config: BotConfig, best_opp: Any) -> bool:
         input_amount_human=D(str(config.trade_size)),
         slippage_bps=int(config.slippage_bps),
         only_direct_routes=("Direct" in best_opp.sell_venue),
+        dexes=venue_to_jupiter_dexes(best_opp.sell_venue),
     )
 
     try:

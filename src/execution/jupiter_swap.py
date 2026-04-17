@@ -73,7 +73,17 @@ class JupiterSwapBuilder:
         input_amount_human: float | str,
         slippage_bps: int,
         only_direct_routes: bool = False,
+        dexes: list[str] | None = None,
     ) -> SwapQuote:
+        """Fetch a Jupiter quote.
+
+        ``dexes`` (Phase 3d): when set, Jupiter is constrained to route
+        only through the named DEX(es). Values Jupiter accepts: "Raydium",
+        "Raydium CLMM", "Whirlpool" (Orca v2), "Orca V2", "Meteora",
+        "Meteora DLMM", "Phoenix", "Lifinity V2", etc. Leaving this None
+        keeps Jupiter's default full-aggregator behavior. Use the helper
+        ``venue_to_jupiter_dexes`` to map scanner venue names.
+        """
         in_tok = get_token(input_symbol)
         out_tok = get_token(output_symbol)
         from decimal import Decimal
@@ -86,6 +96,9 @@ class JupiterSwapBuilder:
             "onlyDirectRoutes": "true" if only_direct_routes else "false",
             "restrictIntermediateTokens": "true",
         }
+        if dexes:
+            # Jupiter accepts a comma-separated list in the ``dexes`` param.
+            params["dexes"] = ",".join(dexes)
         resp = self._session.get(f"{self.base_url}/quote", params=params, timeout=self.timeout)
         resp.raise_for_status()
         body = resp.json()

@@ -4,11 +4,11 @@
 
 ### Summary
 
-Phases 2d, 3b, 4 completed in a 31-minute autonomous run. Scanner remains
-live in dry-run; execution stack is built and tested but gated off by
-the 7 safety checks. Test suite went **204 → 263 (+59)**. Last deployed
-SHA `1770ea2`. See `claude_session/autonomous_report.md` for the per-
-phase breakdown and decisions made on the user's behalf.
+Phases 2d, 3b, 4, **and 3c** completed autonomously (≈38 min end-to-end).
+Scanner remains live in dry-run; execution stack is built and tested
+but gated off by the 7 safety checks. Test suite went **204 → 273 (+69)**.
+Last deployed SHA `86666c1`. See `claude_session/autonomous_report.md`
+for the per-phase breakdown and decisions made on the user's behalf.
 
 ### Deployed
 
@@ -26,7 +26,7 @@ phase breakdown and decisions made on the user's behalf.
 - Bot image: `local/solana-trader:latest` (python:3.11-slim)
 - Submodule: `lib/trading_platform` at `495b4c2`
 
-### Test count: **263**
+### Test count: **273**
 
 Growth:
 - 133 baseline after migration
@@ -36,6 +36,7 @@ Growth:
 - +7 SolanaMarket cooldown + rotation (Jupiter rate-limit fix)
 - +15 Phase 3b (atomic swap + verifier balance deltas)
 - +10 Phase 4 (rehearsal wiring is script-only; ops fee card + alert hooks covered)
+- +10 Phase 3c (ALT fetcher + parse_alt_addresses + default resolver wiring)
 
 ### What works
 
@@ -69,9 +70,10 @@ PYTHONPATH=src python3 scripts/rehearsal.py             # full wiring rehearsal 
 ### Open blockers before Phase 5
 
 1. **Jupiter paid tier (or Helius)** — free tier caps us at 4 req/s. With 5 pairs we need rotation; with a paid tier we can scan all 5 every tick. Upgrade + set `SolanaMarket._max_pairs_per_scan = 0` to disable rotation.
-2. **ALT fetcher for atomic swap** — `rehearsal.py` passes an empty ALT list; any real Jupiter swap that routes through an ALT will fail to compile. Wire `SolanaRPC.get_address_lookup_tables(keys)` to decode `AddressLookupTable` accounts from `getMultipleAccounts` output.
+2. ~~ALT fetcher for atomic swap~~ — **resolved in Phase 3c** (`86666c1`). Real `SolanaRPC.get_address_lookup_tables` wired, rehearsal uses it.
 3. **Wallet keypair** — `SOLANA_WALLET_KEYPAIR_PATH` is unset. Required before `--execute-live` can clear gate #2.
 4. **Jito credentials** — for competitive landing of atomic swaps. Optional; Phase 3b's default plain-RPC path works without.
+5. **Raydium/Orca direct legs in `atomic_swap`** — current builder is Jupiter→Jupiter only. Hand-rolled instruction assembly required for Phase 3d.
 
 ### AWS identities (unchanged)
 

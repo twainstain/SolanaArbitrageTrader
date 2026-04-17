@@ -1,9 +1,9 @@
 # Autonomous run report
 
 Started: 2026-04-17 01:07 EDT (cron-triggered resume).
-Finished: 2026-04-17 01:38 EDT (≈31 min total).
+Finished: 2026-04-17 01:45 EDT (≈38 min total — extended one tick for Phase 3c).
 Starting SHA: `4da070e` · 204 tests green.
-Ending   SHA: `1770ea2` · **263 tests green** (+59).
+Ending   SHA: `86666c1` · **273 tests green** (+69).
 All commits pushed to `github.com/twainstain/SolanaArbitrageTrader`.
 Prod bot stayed healthy across 5 redeploys; never left dry-run.
 
@@ -110,11 +110,23 @@ All 7 safety gates in `src/execution/solana_executor.py` are untouched. `SOLANA_
 - Jupiter 429 regression (introduced by LST pairs, fixed by cooldown + rotation in `0c9f76c` + `7342d18`).
 - No other bugs discovered this run.
 
+## Phase 3c — ALT fetcher — **done** (added post-handoff in autonomous-loop continuation)
+
+- **`SolanaRPC.get_address_lookup_tables(keys)`** + **`parse_alt_addresses(data)`** —
+  decodes on-chain `AddressLookupTable` accounts. 56-byte meta header, then packed
+  `Pubkey[]`. Skips missing accounts, wrong-owner accounts, empty tables, malformed
+  keys. +5 tests in `test_solana_rpc.py`.
+- **Default resolver in `AtomicSwapBuilder.build_atomic_tx`** — when
+  `alt_resolver=None` is passed, a fresh `SolanaRPC()` handles the lookup.
+  Tests can still inject mocks. +1 test in `test_atomic_swap.py`.
+- **`scripts/rehearsal.py`** now uses the real resolver; the previous
+  "empty list + warn" path is gone. Rehearsal compiles `MessageV0`
+  against live on-chain ALTs the same way a real submission would.
+
 ## Remaining known gaps
 
 - **Jupiter free-tier rate limit** is the binding constraint on prod throughput. Upgrading to Helius/paid Jupiter would let us set `max_pairs_per_scan = len(pairs)` and scan all 5 pairs every tick.
-- **Atomic swap ALT resolver** is stubbed in `rehearsal.py`. Phase 3c should wire a real `SolanaRPC.get_address_lookup_tables(keys) -> list[AddressLookupTableAccount]` — decode `AddressLookupTable` accounts from `getMultipleAccounts`. Until then, the atomic tx compile will fail for any opp that pulls accounts outside the statically-referenced set.
-- **Raydium direct legs** (Phase 3c per the brief) — `atomic_swap.build_atomic_tx` only handles Jupiter legs. For Raydium/Orca direct we need hand-rolled instruction assembly.
+- **Raydium direct legs** — `atomic_swap.build_atomic_tx` only handles Jupiter legs. For Raydium/Orca direct we need hand-rolled instruction assembly. Separate from the ALT fetcher, which is now done.
 - **Jito bundle wiring** — stubbed. Needs auth keypair before we can enable.
 - **`opportunity_detail.py`** threshold-snapshot guard (already shipped in earlier session) handles the legacy JSON-as-string case; not strictly a gap but documented here since it touches execution data you'll read post-rehearsal.
 
@@ -125,8 +137,8 @@ None. Clean stop at end of Phase 4 per the brief. Phase 5 (narrow live rollout) 
 ## Final prod status
 
 ```
-commit:    1770ea2
-tests:     263 passing
+commit:    86666c1
+tests:     273 passing
 ec2:       54.163.230.90 (t3.small)
 dashboard: https://arb-trader-solana.yeda-ai.com/ (Let's Encrypt TLS)
            new /ops card visible: "Fees 24h (lamports)"

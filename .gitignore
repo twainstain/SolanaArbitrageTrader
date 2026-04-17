@@ -13,6 +13,18 @@ logs/*.jsonl
 tmp_*.html
 .claude/
 docs/autoresearch_original/
-contracts/out/
-contracts/cache/
-contracts/broadcast/
+# Solana DB + quote diagnostics (never commit runtime state)
+data/solana_arb.db
+data/solana_arb.db-shm
+data/solana_arb.db-wal
+data/reports/
+src/logs/
+# Legacy EVM Foundry artefacts (kept under _evm_legacy/)
+_evm_legacy/contracts/out/
+_evm_legacy/contracts/cache/
+_evm_legacy/contracts/broadcast/
+_evm_legacy/contracts/contracts/out/
+_evm_legacy/contracts/contracts/cache/
+_evm_legacy/contracts/contracts/broadcast/
+# .env backups written by scripts/setup_env.py
+.env.bak.*

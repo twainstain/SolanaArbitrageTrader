@@ -1,4 +1,4 @@
-name: Deploy Arbitrage Trader
+name: Deploy SolanaArbitrageTrader
 
 on:
   push:
@@ -34,7 +34,12 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install web3 requests python-dotenv fastapi "uvicorn[standard]" psycopg2-binary pytest httpx
+          # Install the project's declared deps + execution extras (solders,
+          # base58) so the Solana test suite (Orca/Raydium/atomic swap/wallet)
+          # can import. pyproject.toml is the source of truth.
+          pip install --upgrade pip
+          pip install -e ".[dev,execution]"
+          pip install httpx
 
       - name: Install trading_platform
         run: |
@@ -42,13 +47,20 @@ jobs:
           pip install lib/trading_platform
 
       - name: Run tests
-        run: PYTHONPATH=src pytest tests/ --ignore=lib/ -q
+        run: PYTHONPATH=src:lib/trading_platform/src pytest tests/ --ignore=lib/ -q
 
   build-and-push:
     name: Build & Push Docker Image
     needs: test
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    # Only run when the AWS secrets are configured. Without them the ECR
+    # push would 401 and fail the whole pipeline. Prod is currently deployed
+    # via scripts/deploy_prod.sh (rsync from laptop), so this job is
+    # optional until ECR/ECS is wired.
+    if: >-
+      github.ref == 'refs/heads/master'
+      && github.event_name == 'push'
+      && vars.ECR_ENABLED == 'true'
     permissions:
       id-token: write
       contents: read
@@ -71,7 +83,7 @@ jobs:
       - name: Build, tag, and push image
         env:
           ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
-          ECR_REPOSITORY: arb-trader
+          ECR_REPOSITORY: solana-trader
           IMAGE_TAG: ${{ github.sha }}
         run: |
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
@@ -84,6 +96,10 @@ jobs:
     name: Deploy to EC2
     needs: build-and-push
     runs-on: ubuntu-latest
+    # Same gate as build-and-push: skip unless the repo has ECR_ENABLED=true
+    # as a variable AND the needs-job actually ran. Prevents the "Deploy"
+    # step from turning red when the ECR pipeline is intentionally off.
+    if: vars.ECR_ENABLED == 'true'
     steps:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1
@@ -93,22 +109,23 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
             set -e
-            cd /opt/arb-trader
+            cd /opt/solana-trader
 
             # Pull latest code
             git pull origin master --ff-only
+            git submodule update --init --recursive
 
             # Try ECR pull, fall back to local build
             if [ -n "${{ secrets.ECR_REGISTRY }}" ]; then
               aws ecr get-login-password --region us-east-1 \
                 | docker login --username AWS --password-stdin ${{ secrets.ECR_REGISTRY }} 2>/dev/null || true
               export ECR_REGISTRY=${{ secrets.ECR_REGISTRY }}
-              docker compose pull bot 2>/dev/null || echo "ECR pull failed — building locally"
+              sudo docker compose pull bot 2>/dev/null || echo "ECR pull failed — building locally"
             fi
-            docker compose build bot
+            sudo docker compose build bot
 
             # Rolling restart
-            docker compose up -d bot
+            sudo docker compose up -d bot
 
             # Health check — wait up to 60s (startup includes pool discovery)
             CREDS=$(grep DASHBOARD_USER .env | cut -d= -f2):$(grep DASHBOARD_PASS .env | cut -d= -f2)
@@ -122,6 +139,6 @@ jobs:
             done
 
             echo "Health check failed — rolling back"
-            docker compose down bot
-            docker compose up -d bot
+            sudo docker compose down bot
+            sudo docker compose up -d bot
             exit 1

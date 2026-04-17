@@ -4,7 +4,7 @@ services:
   # Postgres database — lives on the same EC2 as the bot.  Data persists in
   # the named volume `pg-data`.  Daily S3 backup via scripts/backup_to_s3.sh.
   postgres:
-    image: postgres:16-alpine
+    image: postgres:17-alpine
     container_name: solana-postgres
     restart: unless-stopped
     environment:

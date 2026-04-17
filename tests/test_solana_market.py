@@ -212,3 +212,82 @@ def test_cooldown_expires_naturally(tmp_path):
 
     # Cooldown had expired → 2 quotes (Best + Direct) produced.
     assert len(quotes) == 2
+
+
+# ---------------------------------------------------------------------------
+# Round-robin pair rotation (Phase 2d).
+# ---------------------------------------------------------------------------
+
+
+def test_rotation_selects_primary_plus_one_extra_per_scan(tmp_path):
+    from core.config import PairConfig
+
+    cfg = _cfg(tmp_path)
+    m = SolanaMarket(cfg)
+    m._max_pairs_per_scan = 2
+    m.pairs = [
+        PairConfig("A/B", "SOL", "USDC", Decimal("1")),    # primary
+        PairConfig("C/D", "SOL", "USDC", Decimal("1")),    # extras
+        PairConfig("E/F", "SOL", "USDC", Decimal("1")),
+        PairConfig("G/H", "SOL", "USDC", Decimal("1")),
+    ]
+
+    # Four scans should visit each extra exactly once, always with primary.
+    visited = []
+    for _ in range(4):
+        visited.append([p.pair for p in m._pairs_this_scan()])
+
+    # Primary always present.
+    for scan in visited:
+        assert scan[0] == "A/B"
+    # Extras cycle through C/D, E/F, G/H and back.
+    extras = [scan[1] for scan in visited]
+    assert extras == ["C/D", "E/F", "G/H", "C/D"]
+
+
+def test_rotation_disabled_when_max_is_zero_or_negative(tmp_path):
+    from core.config import PairConfig
+    cfg = _cfg(tmp_path)
+    m = SolanaMarket(cfg)
+    m.pairs = [
+        PairConfig("A/B", "SOL", "USDC", Decimal("1")),
+        PairConfig("C/D", "SOL", "USDC", Decimal("1")),
+        PairConfig("E/F", "SOL", "USDC", Decimal("1")),
+    ]
+    m._max_pairs_per_scan = 0
+    assert len(m._pairs_this_scan()) == 3
+    m._max_pairs_per_scan = -1
+    assert len(m._pairs_this_scan()) == 3
+
+
+def test_rotation_returns_all_when_max_exceeds_pair_count(tmp_path):
+    from core.config import PairConfig
+    cfg = _cfg(tmp_path)
+    m = SolanaMarket(cfg)
+    m.pairs = [
+        PairConfig("A/B", "SOL", "USDC", Decimal("1")),
+        PairConfig("C/D", "SOL", "USDC", Decimal("1")),
+    ]
+    m._max_pairs_per_scan = 10
+    got = [p.pair for p in m._pairs_this_scan()]
+    assert got == ["A/B", "C/D"]
+
+
+def test_rotation_with_take_greater_than_one(tmp_path):
+    """max_pairs=3 with 5 pairs → primary + 2 extras, advancing by 2 each scan."""
+    from core.config import PairConfig
+    cfg = _cfg(tmp_path)
+    m = SolanaMarket(cfg)
+    m._max_pairs_per_scan = 3
+    m.pairs = [
+        PairConfig("P/Y", "SOL", "USDC", Decimal("1")),   # primary
+        PairConfig("A/B", "SOL", "USDC", Decimal("1")),   # 4 extras
+        PairConfig("C/D", "SOL", "USDC", Decimal("1")),
+        PairConfig("E/F", "SOL", "USDC", Decimal("1")),
+        PairConfig("G/H", "SOL", "USDC", Decimal("1")),
+    ]
+    scans = [[p.pair for p in m._pairs_this_scan()] for _ in range(3)]
+    assert scans[0] == ["P/Y", "A/B", "C/D"]
+    assert scans[1] == ["P/Y", "E/F", "G/H"]
+    # Wrap-around: 4 extras, take=2, offset was 4 % 4 = 0.
+    assert scans[2] == ["P/Y", "A/B", "C/D"]

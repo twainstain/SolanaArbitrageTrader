@@ -73,6 +73,12 @@ class SolanaMarket:
         # the rate-limited one naturally backs off.
         self._rate_limit_cooldown_seconds: float = 60.0
         self._pair_cooldown_until: dict[str, float] = {}
+        # Round-robin pair rotation: when more than `max_pairs_per_scan` pairs
+        # are configured, each scan queries only a subset to stay under the
+        # Jupiter free-tier rate limit (~60 req/min = 1 req/s; each pair costs
+        # 2 requests). Primary pair is always queried; extras rotate.
+        self._max_pairs_per_scan: int = 2
+        self._rotation_offset: int = 0
 
     @staticmethod
     def _build_pairs(config: BotConfig) -> list[PairConfig]:
@@ -91,15 +97,19 @@ class SolanaMarket:
     # ------------------------------------------------------------------
 
     def get_quotes(self) -> list[MarketQuote]:
-        """Fetch one pair of quotes per configured pair.
+        """Fetch Jupiter quotes for a subset of configured pairs.
 
         Returns [] on total failure (e.g. Jupiter unreachable).  Per-pair
         failures log a warning and continue — partial data is better than no
         data for scanner work. Pairs in 429-cooldown are silently skipped.
+
+        When more than `max_pairs_per_scan` pairs are configured, a
+        round-robin rotation covers the extras across successive scans.
+        This keeps request volume under Jupiter's free-tier rate limit.
         """
         now = time.time()
         out: list[MarketQuote] = []
-        for pair_cfg in self.pairs:
+        for pair_cfg in self._pairs_this_scan():
             cooldown_until = self._pair_cooldown_until.get(pair_cfg.pair, 0.0)
             if cooldown_until > now:
                 continue
@@ -120,6 +130,29 @@ class SolanaMarket:
                     pair_cfg.pair, exc,
                 )
         return out
+
+    def _pairs_this_scan(self) -> list[PairConfig]:
+        """Pick `max_pairs_per_scan` pairs this scan using round-robin.
+
+        Primary pair (index 0) is always included; extras rotate across
+        scans so over `ceil(len(extras) / (max-1))` scans every pair is
+        covered. When `max_pairs_per_scan >= len(pairs)` everything is
+        returned every scan (current behavior for tests and small configs).
+        """
+        n = len(self.pairs)
+        if n == 0:
+            return []
+        if self._max_pairs_per_scan <= 0 or self._max_pairs_per_scan >= n:
+            return list(self.pairs)
+
+        selected: list[PairConfig] = [self.pairs[0]]
+        extras = self.pairs[1:]
+        if extras and self._max_pairs_per_scan > 1:
+            take = self._max_pairs_per_scan - 1
+            for i in range(take):
+                selected.append(extras[(self._rotation_offset + i) % len(extras)])
+            self._rotation_offset = (self._rotation_offset + take) % len(extras)
+        return selected
 
     # ------------------------------------------------------------------
     # Internals

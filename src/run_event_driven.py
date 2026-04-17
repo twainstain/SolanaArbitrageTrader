@@ -257,11 +257,16 @@ def run(
                     logger.warning("[loop] queue full — dropping opportunity %s", opp.pair)
 
             status = "queued" if result.opportunities else "no_opportunity"
+            # Pull per-venue wall-clock timings from the multi-venue market
+            # so the latency record attributes tail time to the right
+            # backend. Single-venue markets leave this as an empty dict.
+            venue_timings = getattr(market, "last_venue_timings_ms", None)
             tracker.record_scan_summary(
                 quote_count=len(quotes),
                 opp_count=len(result.opportunities),
                 rejected_count=result.rejected_count,
                 status=status,
+                venue_timings_ms=venue_timings,
             )
 
             # Phase 2d: feed the best observed net profit to the adaptive

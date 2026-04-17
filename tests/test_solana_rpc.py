@@ -188,3 +188,75 @@ class TestGetAddressLookupTables:
         result = rpc.get_address_lookup_tables(["k1", "k2", "11111111111111111111111111111111", "k4"])
         assert len(result) == 1
         assert list(result[0].addresses) == good_addrs
+
+
+# ---------------------------------------------------------------------------
+# Multi-endpoint failover (Phase perf).
+# ---------------------------------------------------------------------------
+
+
+class TestRpcFailover:
+    def test_single_endpoint_behaves_like_before(self):
+        rpc = SolanaRPC(url="http://primary/")
+        # Mock the session's post so we can control the response.
+        def _ok_post(url, json=None, timeout=None):
+            r = MagicMock()
+            r.status_code = 200
+            r.raise_for_status = MagicMock()
+            r.json = MagicMock(return_value={"jsonrpc": "2.0", "id": 1, "result": 42})
+            return r
+        rpc._session.post = MagicMock(side_effect=_ok_post)
+        assert rpc._call("getFoo", []) == 42
+
+    def test_rotates_on_network_error(self):
+        import requests as _r
+        rpc = SolanaRPC(urls=["http://primary/", "http://fallback/"])
+        calls: list[str] = []
+        def _post(url, json=None, timeout=None):
+            calls.append(url)
+            if url == "http://primary/":
+                raise _r.ConnectionError("connection refused")
+            r = MagicMock()
+            r.status_code = 200
+            r.raise_for_status = MagicMock()
+            r.json = MagicMock(return_value={"jsonrpc": "2.0", "id": 1, "result": "rescued"})
+            return r
+        rpc._session.post = MagicMock(side_effect=_post)
+        assert rpc._call("getFoo", []) == "rescued"
+        assert calls == ["http://primary/", "http://fallback/"]
+        # Primary got one error charged; fallback clean.
+        assert rpc._endpoint_errors == [1, 0]
+        # After success on fallback, the sticky URL is fallback.
+        assert rpc.url == "http://fallback/"
+
+    def test_all_endpoints_fail_raises(self):
+        import requests as _r
+        rpc = SolanaRPC(urls=["http://a/", "http://b/"])
+        rpc._session.post = MagicMock(side_effect=_r.ConnectionError("boom"))
+        try:
+            rpc._call("getFoo", [])
+        except RuntimeError as exc:
+            assert "all 2 endpoint(s) failed" in str(exc)
+        else:
+            assert False, "expected RuntimeError when every endpoint fails"
+        assert rpc._endpoint_errors == [1, 1]
+
+    def test_jsonrpc_error_does_not_rotate(self):
+        """A server-level JSON-RPC error (bad params, etc.) is a request bug,
+        not an endpoint problem — don't rotate to fallback."""
+        rpc = SolanaRPC(urls=["http://a/", "http://b/"])
+        def _post(url, json=None, timeout=None):
+            r = MagicMock()
+            r.status_code = 200
+            r.raise_for_status = MagicMock()
+            r.json = MagicMock(return_value={"error": {"code": -32602, "message": "invalid params"}})
+            return r
+        rpc._session.post = MagicMock(side_effect=_post)
+        try:
+            rpc._call("getFoo", [])
+        except RuntimeError as exc:
+            assert "invalid params" in str(exc)
+        else:
+            assert False, "expected RuntimeError"
+        # No failover attempted.
+        assert rpc._endpoint_errors == [0, 0]

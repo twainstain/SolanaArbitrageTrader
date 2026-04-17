@@ -67,3 +67,68 @@ def test_each_backend_called_once_per_scan():
     assert a.get_quotes.call_count == 2
     assert b.get_quotes.call_count == 2
     mv.close()
+
+
+# ---------------------------------------------------------------------------
+# Per-venue latency timings (perf instrumentation).
+# ---------------------------------------------------------------------------
+
+
+def test_last_venue_timings_populated_on_success():
+    from market.multi_venue_market import MultiVenueMarket
+
+    class _FakeSource:
+        def __init__(self, quotes):
+            self._quotes = quotes
+        def get_quotes(self):
+            return self._quotes
+
+    m = MultiVenueMarket([
+        ("Jupiter", _FakeSource(["q1"])),
+        ("Orca", _FakeSource(["q2", "q3"])),
+    ])
+    quotes = m.get_quotes()
+    assert sorted(quotes) == ["q1", "q2", "q3"]
+    assert set(m.last_venue_timings_ms) == {"Jupiter", "Orca"}
+    # Times are non-negative floats (just-ran workers usually clock under 1ms
+    # but can be slightly higher on CI).
+    for name, ms in m.last_venue_timings_ms.items():
+        assert ms >= 0
+        assert ms < 1000
+
+
+def test_last_venue_timings_still_recorded_on_error():
+    from market.multi_venue_market import MultiVenueMarket
+
+    class _BoomSource:
+        def get_quotes(self):
+            raise RuntimeError("venue down")
+
+    class _OkSource:
+        def get_quotes(self):
+            return ["ok"]
+
+    m = MultiVenueMarket([
+        ("Raydium", _BoomSource()),
+        ("Orca", _OkSource()),
+    ])
+    quotes = m.get_quotes()
+    assert quotes == ["ok"]
+    # Both venues logged — caller can see the failed one's latency too.
+    assert set(m.last_venue_timings_ms) == {"Raydium", "Orca"}
+
+
+def test_last_venue_timings_reset_per_scan():
+    from market.multi_venue_market import MultiVenueMarket
+
+    class _Src:
+        def get_quotes(self):
+            return []
+
+    m = MultiVenueMarket([("Jupiter", _Src())])
+    m.get_quotes()
+    assert "Jupiter" in m.last_venue_timings_ms
+    # Second call starts fresh — even if the venue list changed.
+    m.backends = []
+    m.get_quotes()
+    assert m.last_venue_timings_ms == {}

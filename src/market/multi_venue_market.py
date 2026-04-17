@@ -42,22 +42,47 @@ class MultiVenueMarket:
         )
 
     def get_quotes(self) -> list[MarketQuote]:
+        """Fan-out quotes across all venues; returns merged list.
+
+        Side-effect: stamps wall-clock per-venue timings into
+        ``self.last_venue_timings_ms`` — a dict[name, float] that the
+        event loop reads to emit a `quoter_timings` latency record per
+        scan. Ported from the EVM ``onchain_market.py`` perf instrumentation
+        so a slow/erroring venue is visible without guessing from aggregate
+        p95. Each value is measured inside the worker thread so it reflects
+        true wall-clock, not queue time.
+        """
+        self.last_venue_timings_ms: dict[str, float] = {}
         if not self.backends:
             return []
 
-        futures = {
-            self._executor.submit(b.get_quotes): name
-            for name, b in self.backends
-        }
+        import time as _time
+
+        def _timed(name: str, source: MarketSource):
+            t0 = _time.monotonic()
+            try:
+                quotes = source.get_quotes()
+                return name, quotes, None, (_time.monotonic() - t0) * 1000.0
+            except Exception as exc:
+                return name, [], exc, (_time.monotonic() - t0) * 1000.0
+
+        futures = [
+            self._executor.submit(_timed, name, b) for name, b in self.backends
+        ]
         out: list[MarketQuote] = []
         for fut in as_completed(futures, timeout=self.per_backend_timeout * 2):
-            name = futures[fut]
             try:
-                quotes = fut.result(timeout=self.per_backend_timeout)
+                name, quotes, exc, elapsed_ms = fut.result(timeout=self.per_backend_timeout)
+            except Exception as outer_exc:
+                logger.warning("[multi-venue] worker future failed: %s", outer_exc)
+                continue
+            self.last_venue_timings_ms[name] = elapsed_ms
+            if exc is not None:
+                logger.warning("[multi-venue] %s failed in %.0fms: %s", name, elapsed_ms, exc)
+            else:
                 out.extend(quotes)
-                logger.debug("[multi-venue] %s → %d quotes", name, len(quotes))
-            except Exception as exc:
-                logger.warning("[multi-venue] %s failed: %s", name, exc)
+                logger.debug("[multi-venue] %s → %d quotes (%.0fms)",
+                             name, len(quotes), elapsed_ms)
         return out
 
     def close(self) -> None:

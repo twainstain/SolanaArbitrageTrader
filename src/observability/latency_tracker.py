@@ -126,6 +126,7 @@ class LatencyTracker:
         opp_count: int,
         rejected_count: int = 0,
         status: str = "no_opportunity",
+        venue_timings_ms: dict[str, float] | None = None,
     ) -> None:
         """Record scan-level summary for EVERY cycle (not just pipeline hits).
 
@@ -134,6 +135,10 @@ class LatencyTracker:
             opp_count: number of opportunities that passed all filters
             rejected_count: number of opportunities rejected by scanner
             status: overall scan result — "no_opportunity", "queued", "market_error"
+            venue_timings_ms: per-venue wall-clock in ms (Jupiter/Raydium/Orca).
+                Lets offline latency analysis attribute scan tail to the
+                right backend. Populated from
+                MultiVenueMarket.last_venue_timings_ms.
         """
         # Same pattern as record_pipeline: build record under lock, I/O outside.
         with self._lock:
@@ -149,6 +154,10 @@ class LatencyTracker:
                 "scan_marks_ms": dict(self._scan.marks),
                 "total_scan_ms": round(total_ms, 2),
             }
+            if venue_timings_ms:
+                record["venue_timings_ms"] = {
+                    k: round(float(v), 2) for k, v in venue_timings_ms.items()
+                }
         self._file.write(json.dumps(record) + "\n")
         self._file.flush()
 

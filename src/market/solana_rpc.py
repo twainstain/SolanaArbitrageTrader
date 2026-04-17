@@ -47,11 +47,16 @@ class AccountInfo:
 
 
 class SolanaRPC:
-    """Thin HTTP client around Solana JSON-RPC.
+    """Thin HTTP client around Solana JSON-RPC with multi-endpoint failover.
 
-    Retries are deliberately minimal — scanner loops want fast failure so
-    we can skip a venue and move on.  The market adapter catches exceptions
-    per venue and continues.
+    The scanner loop wants fast failure so a single slow RPC doesn't stall
+    the whole scan. When ``SOLANA_RPC_URL[_N]`` declares multiple endpoints,
+    this client rotates to the next on any error (network, 5xx, 429) and
+    the caller never sees the failure. On success the current endpoint
+    sticks — no flapping.
+
+    If only one endpoint is configured the class behaves exactly as before
+    (failure raises through).
     """
 
     def __init__(
@@ -59,11 +64,21 @@ class SolanaRPC:
         url: str | None = None,
         timeout: float = 2.5,
         commitment: str = "processed",
+        urls: list[str] | None = None,
     ) -> None:
-        if url is None:
-            urls = get_solana_rpc_urls()
-            url = urls[0] if urls else "https://api.mainnet-beta.solana.com"
-        self.url = url
+        # Explicit urls list beats env lookup; single `url` beats both
+        # (backwards-compat for tests that pass one URL).
+        if urls:
+            self._urls = list(urls)
+        elif url is not None:
+            self._urls = [url]
+        else:
+            env_urls = get_solana_rpc_urls()
+            self._urls = list(env_urls) if env_urls else ["https://api.mainnet-beta.solana.com"]
+        self._current_idx = 0
+        # Keep ``self.url`` pointing at the active endpoint for logging
+        # + backwards-compat with callers that read it.
+        self.url = self._urls[self._current_idx]
         self.timeout = timeout
         self.commitment = commitment
         self._session = requests.Session()
@@ -72,6 +87,8 @@ class SolanaRPC:
             "Accept": "application/json",
         })
         self._request_id = 0
+        # Per-endpoint error counter so we can expose a health snapshot.
+        self._endpoint_errors: list[int] = [0] * len(self._urls)
 
     # ------------------------------------------------------------------
     # Low-level RPC
@@ -85,12 +102,37 @@ class SolanaRPC:
             "method": method,
             "params": params,
         }
-        resp = self._session.post(self.url, json=payload, timeout=self.timeout)
-        resp.raise_for_status()
-        body = resp.json()
-        if "error" in body:
-            raise RuntimeError(f"Solana RPC error: {body['error']}")
-        return body.get("result")
+        # Try each configured endpoint once, starting with the current one.
+        # On network/server errors we rotate; on protocol-level errors
+        # (JSON-RPC "error" field) we do NOT rotate — that's a request bug,
+        # not an endpoint problem.
+        attempts = len(self._urls)
+        last_exc: Exception | None = None
+        for _ in range(attempts):
+            endpoint_url = self._urls[self._current_idx]
+            try:
+                resp = self._session.post(endpoint_url, json=payload, timeout=self.timeout)
+                resp.raise_for_status()
+                body = resp.json()
+                if "error" in body:
+                    raise RuntimeError(f"Solana RPC error: {body['error']}")
+                # Success — sticky, don't rotate.
+                self.url = endpoint_url
+                return body.get("result")
+            except (requests.RequestException, requests.HTTPError, ValueError) as exc:
+                # Transport / server problem — mark the endpoint and rotate.
+                self._endpoint_errors[self._current_idx] += 1
+                last_exc = exc
+                logger.debug(
+                    "[rpc] %s failed on %s: %s — rotating",
+                    method, endpoint_url.split("//", 1)[-1].split("/", 1)[0], exc,
+                )
+                self._current_idx = (self._current_idx + 1) % len(self._urls)
+                self.url = self._urls[self._current_idx]
+        # All endpoints exhausted.
+        raise RuntimeError(
+            f"Solana RPC: all {attempts} endpoint(s) failed for {method}: {last_exc}"
+        )
 
     # ------------------------------------------------------------------
     # High-level helpers

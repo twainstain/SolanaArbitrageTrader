@@ -83,6 +83,56 @@ class CandidatePipeline(BasePipeline):
         self.dispatcher = dispatcher or AlertDispatcher()
 
     # ------------------------------------------------------------------
+    # Alerting (Phase 4)
+    # ------------------------------------------------------------------
+
+    def _safe_alert(
+        self,
+        event_type: str,
+        pair: str,
+        signature: str,
+        reason: str,
+        opp_id: str = "",
+    ) -> None:
+        """Fan out a trade_reverted / trade_dropped alert without raising.
+
+        Pipeline correctness must not depend on the alerting path — a
+        Discord/Gmail outage should log and move on, not crash the scanner.
+        The dispatcher already swallows per-backend errors, but we wrap
+        anyway so a malformed message or missing backend can't bring down
+        the verifier loop.
+        """
+        try:
+            if event_type == "trade_reverted":
+                self.dispatcher.trade_reverted(
+                    pair=pair, tx_hash=signature, reason=reason,
+                    opp_id=opp_id, chain="solana",
+                )
+            elif event_type == "trade_dropped":
+                # dispatcher has no trade_dropped helper yet; use generic
+                # alert() with a consistent event_type for downstream filters.
+                from alerting.dispatcher import opp_dashboard_url, tx_explorer_url
+                details: dict = {"pair": pair, "signature": signature, "reason": reason}
+                msg_lines = [
+                    f"Trade DROPPED: {pair}",
+                    f"TX (attempted): {signature}" if signature else "TX: —",
+                    f"Reason: {reason}",
+                ]
+                if signature:
+                    details["tx_link"] = tx_explorer_url("solana", signature)
+                    msg_lines.append(f"Explorer: {details['tx_link']}")
+                if opp_id:
+                    link = opp_dashboard_url(opp_id)
+                    details["opp_id"] = opp_id
+                    details["dashboard_link"] = link
+                    msg_lines.append(f"Dashboard: {link}")
+                self.dispatcher.alert("trade_dropped", "\n".join(msg_lines), details)
+            else:
+                self.dispatcher.alert(event_type, reason, {"pair": pair, "signature": signature})
+        except Exception as exc:
+            logger.warning("[pipeline] alert fan-out failed for %s: %s", event_type, exc)
+
+    # ------------------------------------------------------------------
     # Stage implementations
     # ------------------------------------------------------------------
 
@@ -238,9 +288,22 @@ class CandidatePipeline(BasePipeline):
                     )
                 if verification.reverted:
                     self.repo.update_opportunity_status(opp_id, Status.REVERTED)
+                    # Phase 4: alert on reverted trades. Fire-and-forget — a
+                    # dispatcher backend that can't send shouldn't block the
+                    # pipeline. _safe_alert logs but never raises.
+                    self._safe_alert(
+                        "trade_reverted",
+                        opportunity.pair, verification.signature, "on-chain revert",
+                        opp_id=opp_id,
+                    )
                     return PipelineResult(opp_id, Status.REVERTED, "tx_reverted", timings=timings)
                 if verification.dropped:
                     self.repo.update_opportunity_status(opp_id, Status.DROPPED)
+                    self._safe_alert(
+                        "trade_dropped",
+                        opportunity.pair, verification.signature or "", "tx dropped (blockhash expired)",
+                        opp_id=opp_id,
+                    )
                     return PipelineResult(opp_id, Status.DROPPED, "tx_dropped", timings=timings)
             timings["submit_ms"] = (time.monotonic() - t4) * 1000
             timings["total_ms"] = (time.monotonic() - t0) * 1000

@@ -230,3 +230,49 @@ class TestAnalyticsDashboard:
         # Filter breakdown should list the two filter_reason rows we inserted.
         assert "passed" in html
         assert "unprofitable" in html
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: new ops cards (wallet SOL, fees 24h, kill switch).
+# ---------------------------------------------------------------------------
+
+
+class TestOpsNewCards:
+    def test_ops_renders_fees_24h_card_with_em_dash_when_gated_off(self, empty_repo):
+        html = ops_dashboard.render(empty_repo)
+        # Fees 24h card title present
+        assert "Fees 24h (lamports)" in html
+        # "Wallet SOL" card always shown
+        assert "Wallet SOL" in html
+        # "Kill switch" card always shown
+        assert "Kill switch" in html
+
+    def test_ops_renders_fees_with_nonzero_when_trade_present(self, populated_repo):
+        """Insert a trade_result with a non-zero fee and verify it surfaces."""
+        from datetime import datetime, timezone
+        from decimal import Decimal
+        repo = populated_repo
+        # Create opp + execution + trade_result chain.
+        opp_id = repo.create_opportunity(
+            pair="SOL/USDC", buy_venue="Jupiter-Best", sell_venue="Raydium-SOL/USDC",
+            spread_bps=Decimal("0.1"),
+        )
+        exec_id = repo.save_execution_attempt(
+            opp_id=opp_id, submission_kind="rpc",
+            signature="sig123", metadata={},
+        )
+        repo.save_trade_result(
+            execution_id=exec_id, included=True, reverted=False, dropped=False,
+            fee_paid_lamports=5000,
+            realized_profit_quote=Decimal("0"),
+            fee_paid_base=Decimal("0.000005"),
+            actual_net_profit=Decimal("0.001"),
+            profit_currency="SOL",
+            confirmation_slot=123,
+        )
+        repo.update_opportunity_status(opp_id, "confirmed")
+
+        html = ops_dashboard.render(repo)
+        assert "Fees 24h (lamports)" in html
+        # 5000 lamports shows up (either formatted or raw).
+        assert "5,000" in html or "5000" in html

@@ -55,6 +55,9 @@ def render(
     wb = get_wallet_balances()
     sol_bal = wb.get("balances", {}).get("SOL")
 
+    # --- fee spend (24h) via time_windows ---
+    fee_spent_lamports = _fee_spent_24h(repo)
+
     # --- infrastructure cards ---
     infra = "".join([
         card("Execution state", exec_state, value_class=exec_cls),
@@ -64,6 +67,10 @@ def render(
         card("Wallet SOL",
              fmt_sol(sol_bal, 4) if sol_bal is not None else "—",
              value_class="status-bad" if (sol_bal is not None and float(sol_bal) < 0.005) else ""),
+        card("Fees 24h (lamports)",
+             fmt_num(fee_spent_lamports) if fee_spent_lamports is not None else "—",
+             sub=f"{fee_spent_lamports / 1_000_000_000:.6f} SOL"
+                 if fee_spent_lamports else ""),
         card("DB backend", repo.conn.backend),
         card("Python",
              f"{os.sys.version_info.major}.{os.sys.version_info.minor}"),
@@ -288,6 +295,22 @@ def render(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _fee_spent_24h(repo: Repository) -> int | None:
+    """Total SOL fees paid by trades in the last 24 hours, in lamports.
+
+    Returns None if the time_windows query fails so the dashboard can
+    render "—" instead of a zero that reads as "$0 fees spent".
+    """
+    try:
+        from observability.time_windows import get_windowed_stats
+        out = get_windowed_stats(repo.conn, "24h")
+        trades = out.get("trades") or {}
+        val = trades.get("total_fee_paid_lamports")
+        return int(val) if val is not None else 0
+    except Exception:
+        return None
+
 
 def _check_rpc(url: str) -> tuple[str, float, int]:
     t0 = time.monotonic()

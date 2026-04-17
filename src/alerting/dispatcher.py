@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # Solana block explorers.  Chain name is kept in the signature for
 # backward-compat but is ignored — all Solana txs use Solscan by default.
 SOLANA_EXPLORER = "https://solscan.io"
-DEFAULT_DASHBOARD_URL = "https://solana-arb-trader.yeda-ai.com"
+DEFAULT_DASHBOARD_URL = "https://arb-trader-solana.yeda-ai.com"
 
 
 def tx_explorer_url(chain: str | None, signature: str) -> str:

@@ -43,7 +43,20 @@ class TxVerifier:
         self.timeout = timeout_seconds
         self.poll_interval = poll_interval
 
-    def verify(self, signature: str) -> VerificationResult:
+    def verify(
+        self,
+        signature: str,
+        wallet_pubkey: str | None = None,
+        base_mint: str | None = None,
+    ) -> VerificationResult:
+        """Poll until landed-or-dropped, then resolve to VerificationResult.
+
+        Phase 3b: when ``wallet_pubkey`` and ``base_mint`` are supplied,
+        parse realized profit from ``meta.pre{,Token}Balances`` vs
+        ``meta.post{,Token}Balances`` and populate ``actual_profit_base``.
+        For SOL-native base, we add the fee back to the delta so the
+        number reflects pre-fee arbitrage profit.
+        """
         deadline = time.monotonic() + self.timeout
         status: dict[str, Any] | None = None
         while time.monotonic() < deadline:
@@ -74,7 +87,7 @@ class TxVerifier:
             )
 
         # Included + no error — fetch the full tx to extract fee + realized PnL.
-        return self._full_result(signature, status)
+        return self._full_result(signature, status, wallet_pubkey, base_mint)
 
     # ------------------------------------------------------------------
     # Internals
@@ -92,9 +105,17 @@ class TxVerifier:
         value = (result or {}).get("value") or []
         return value[0] if value else None
 
-    def _full_result(self, signature: str, status: dict[str, Any]) -> VerificationResult:
+    def _full_result(
+        self,
+        signature: str,
+        status: dict[str, Any],
+        wallet_pubkey: str | None = None,
+        base_mint: str | None = None,
+    ) -> VerificationResult:
         slot = int(status.get("slot", 0))
         fee_lamports = 0
+        actual_profit_base = D("0")
+        tx: dict[str, Any] | None = None
         try:
             tx = self.rpc._call(
                 "getTransaction",
@@ -109,10 +130,13 @@ class TxVerifier:
         except Exception as exc:
             logger.debug("[verifier] getTransaction fallback: %s", exc)
 
+        if tx and wallet_pubkey:
+            actual_profit_base = _realized_profit_from_tx(tx, wallet_pubkey, base_mint, fee_lamports)
+
         fee_base = D(fee_lamports) / D(10**9)
         logger.info(
-            "[verifier] %s included: slot=%d fee=%d lamports",
-            signature[:12], slot, fee_lamports,
+            "[verifier] %s included: slot=%d fee=%d lamports profit_base=%s",
+            signature[:12], slot, fee_lamports, actual_profit_base,
         )
         return VerificationResult(
             included=True, reverted=False, dropped=False,
@@ -120,4 +144,89 @@ class TxVerifier:
             confirmation_slot=slot,
             fee_paid_lamports=fee_lamports,
             fee_paid_base=fee_base,
+            actual_profit_base=actual_profit_base,
         )
+
+
+# ---------------------------------------------------------------------------
+# Balance delta parsing (Phase 3b)
+# ---------------------------------------------------------------------------
+
+
+# Native SOL's "mint" in SPL contexts — the WSOL mint. A base_mint of None or
+# "So11..." triggers the native-SOL accounting path.
+_WSOL_MINT = "So11111111111111111111111111111111111111112"
+
+
+def _realized_profit_from_tx(
+    tx: dict[str, Any],
+    wallet_pubkey: str,
+    base_mint: str | None,
+    fee_lamports: int,
+) -> Decimal:
+    """Extract net base-asset delta for ``wallet_pubkey`` from a getTransaction.
+
+    For native SOL (base_mint is None or wSOL): computes
+    ``post_balance - pre_balance + fee`` in SOL — the fee is added back
+    so the returned number represents arbitrage profit before tx cost,
+    matching how expected_net_profit is computed elsewhere.
+
+    For SPL base assets: locates the wallet's token account by owner+mint
+    in preTokenBalances/postTokenBalances and returns the delta in human
+    units (using the balance entry's ``uiTokenAmount.decimals``).
+
+    Returns ``Decimal("0")`` if the needed entries aren't present.
+    """
+    meta = (tx or {}).get("meta") or {}
+    tx_inner = (tx or {}).get("transaction") or {}
+    message = tx_inner.get("message") or {}
+    account_keys_raw = message.get("accountKeys") or []
+    # accountKeys can be list[str] (legacy) or list[dict] (with signer/writable flags).
+    account_keys: list[str] = []
+    for k in account_keys_raw:
+        if isinstance(k, dict):
+            pk = k.get("pubkey")
+            if pk:
+                account_keys.append(pk)
+        elif isinstance(k, str):
+            account_keys.append(k)
+
+    if base_mint in (None, _WSOL_MINT, "SOL"):
+        # Native SOL path.
+        try:
+            idx = account_keys.index(wallet_pubkey)
+        except ValueError:
+            return D("0")
+        pre = (meta.get("preBalances") or [])
+        post = (meta.get("postBalances") or [])
+        if idx >= len(pre) or idx >= len(post):
+            return D("0")
+        delta_lamports = int(post[idx]) - int(pre[idx]) + int(fee_lamports)
+        return D(delta_lamports) / D(10**9)
+
+    # SPL path: match owner+mint in pre/post token balances. Each entry has
+    # {accountIndex, owner, mint, uiTokenAmount: {amount, decimals, uiAmount}}.
+    pre_tb = meta.get("preTokenBalances") or []
+    post_tb = meta.get("postTokenBalances") or []
+    decimals = 0
+    pre_amount = 0
+    post_amount = 0
+    for row in pre_tb:
+        if row.get("owner") == wallet_pubkey and row.get("mint") == base_mint:
+            uta = row.get("uiTokenAmount") or {}
+            pre_amount = int(uta.get("amount", 0) or 0)
+            decimals = int(uta.get("decimals", 0) or 0)
+            break
+    for row in post_tb:
+        if row.get("owner") == wallet_pubkey and row.get("mint") == base_mint:
+            uta = row.get("uiTokenAmount") or {}
+            post_amount = int(uta.get("amount", 0) or 0)
+            if decimals == 0:
+                decimals = int(uta.get("decimals", 0) or 0)
+            break
+
+    if decimals == 0 and post_amount == 0 and pre_amount == 0:
+        return D("0")
+    delta_native = post_amount - pre_amount
+    # SPL assets don't pay the SOL fee out of this balance, so no fee add-back.
+    return D(delta_native) / (D(10) ** decimals)

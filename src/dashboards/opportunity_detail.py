@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 
-from dashboards._shared import fmt_sol, page, pill, tx_link
+from dashboards._shared import fmt_sol, page, tag, tx_link
 from persistence.repository import Repository
 
 
@@ -36,7 +36,7 @@ def render(repo: Repository, opp_id: str) -> str:
         <strong>{opp['pair']}</strong>:
         buy <code>{opp['buy_venue']}</code> → sell <code>{opp['sell_venue']}</code>
         &nbsp; spread <strong>{opp['spread_bps']}</strong>%
-        &nbsp; {pill(opp['status'], kind)}
+        &nbsp; {tag(opp['status'], kind)}
       </p>
       <p>
         Detected at {opp['detected_at']} · Last updated {opp['updated_at']}
@@ -54,6 +54,10 @@ def render(repo: Repository, opp_id: str) -> str:
     try:
         thresholds = json.loads(risk.get("threshold_snapshot") or "{}")
     except Exception:
+        thresholds = {}
+    # Legacy rows may have stored a JSON-encoded string, which round-trips
+    # to a str here instead of a dict. Coerce so .items() below is safe.
+    if not isinstance(thresholds, dict):
         thresholds = {}
     thresholds_rows = "".join(
         f"<tr><td>{k}</td><td>{_fmt(v)}</td></tr>" for k, v in thresholds.items()

@@ -40,7 +40,7 @@ class _DecimalEncoder(json.JSONEncoder):
 # Log directory — resolve relative to project root
 # ---------------------------------------------------------------------------
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LOG_DIR = _PROJECT_ROOT / "logs"
 
 _CONFIGURED = False
@@ -111,7 +111,7 @@ def _json_dumps(obj: object) -> str:
 
 def _quote_to_dict(q: MarketQuote) -> dict:
     return {
-        "dex": q.dex,
+        "venue": q.venue,
         "pair": q.pair,
         "buy_price": q.buy_price,
         "sell_price": q.sell_price,
@@ -163,62 +163,18 @@ def log_execution(
     _data_logger().info(_json_dumps(record))
 
 
-def log_swap_event(
+def log_slot_event(
     logger: logging.Logger,
-    chain: str,
-    block_number: int,
-    swap_count: int,
+    slot: int,
+    venue: str,
+    event: str,
 ) -> None:
-    """Log detected swap events."""
+    """Log Solana slot/venue-level events (e.g. route health changes)."""
     record = {
-        "event": "swap_detected",
+        "event": event,
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "chain": chain,
-        "block_number": block_number,
-        "swap_count": swap_count,
-    }
-    _data_logger().info(_json_dumps(record))
-
-
-def log_discovery(
-    logger: logging.Logger,
-    discovered_pairs: list,
-) -> None:
-    """Log the pair discovery results from DexScreener."""
-    pairs_data = []
-    for p in discovered_pairs:
-        pairs_data.append({
-            "pair": p.pair,
-            "base_asset": p.base_asset,
-            "quote_asset": p.quote_asset,
-            "trade_size": p.trade_size,
-        })
-    record = {
-        "event": "discovery",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "pair_count": len(discovered_pairs),
-        "pairs": pairs_data,
-    }
-    _data_logger().info(_json_dumps(record))
-
-
-def log_discovery_detail(
-    logger: logging.Logger,
-    pair_name: str,
-    dex_count: int,
-    total_volume_usd: float,
-    dex_names: list[str],
-    chains: list[str],
-) -> None:
-    """Log detailed info for a single discovered pair."""
-    record = {
-        "event": "discovery_detail",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "pair": pair_name,
-        "dex_count": dex_count,
-        "total_volume_usd": total_volume_usd,
-        "dex_names": dex_names,
-        "chains": chains,
+        "slot": slot,
+        "venue": venue,
     }
     _data_logger().info(_json_dumps(record))
 

@@ -12,7 +12,7 @@ You have:
 
 # Goal
 
-Build a **production-grade crypto arbitrage trading bot** that:
+Build a **production-grade crypto arbitrage trading bot for Solana** that:
 - Identifies real arbitrage opportunities
 - Executes trades reliably on-chain
 - Accounts for MEV, latency, gas, and slippage

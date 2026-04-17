@@ -56,7 +56,7 @@ def main():
 
     count = dispatcher.alert(
         "system_error",
-        "Test Alert — Arbitrage Trader\n"
+        "Test Alert — SolanaTrader\n"
         "If you see this, alerting is working correctly.\n"
         "This is a test message sent before deployment.",
         {

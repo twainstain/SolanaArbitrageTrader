@@ -1,10 +1,32 @@
 version: "3.8"
 
 services:
+  # Postgres database — lives on the same EC2 as the bot.  Data persists in
+  # the named volume `pg-data`.  Daily S3 backup via scripts/backup_to_s3.sh.
+  postgres:
+    image: postgres:16-alpine
+    container_name: solana-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-solana_arb}
+      POSTGRES_USER: ${POSTGRES_USER:-solana}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-solana} -d ${POSTGRES_DB:-solana_arb}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Intentionally NOT exposed to the host network — only the bot talks to it
+    # via the internal sol-net bridge.
+    networks:
+      - sol-net
+
   bot:
-    image: ${ECR_REGISTRY:-local}/arb-trader:${IMAGE_TAG:-latest}
+    image: ${ECR_REGISTRY:-local}/solana-trader:${IMAGE_TAG:-latest}
     build: .
-    container_name: arb-bot
+    container_name: solana-bot
     restart: unless-stopped
     env_file: .env
     ports:
@@ -13,74 +35,18 @@ services:
       - ./logs:/app/logs
       - ./data:/app/data
     depends_on:
-      - loki
+      postgres:
+        condition: service_healthy
     networks:
-      - arb-net
+      - sol-net
 
-  prometheus:
-    image: prom/prometheus:v2.51.2
-    container_name: arb-prometheus
-    restart: unless-stopped
-    volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus-data:/prometheus
-    ports:
-      - "9090:9090"
-    networks:
-      - arb-net
-
-  grafana:
-    image: grafana/grafana:10.4.2
-    container_name: arb-grafana
-    restart: unless-stopped
-    environment:
-      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASS:-admin}
-      - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_SERVER_ROOT_URL=%(protocol)s://%(domain)s/grafana/
-      - GF_SERVER_SERVE_FROM_SUB_PATH=true
-    volumes:
-      - grafana-data:/var/lib/grafana
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
-    ports:
-      - "3000:3000"
-    depends_on:
-      - prometheus
-      - loki
-    networks:
-      - arb-net
-
-  loki:
-    image: grafana/loki:2.9.4
-    container_name: arb-loki
-    restart: unless-stopped
-    volumes:
-      - ./monitoring/loki.yml:/etc/loki/local-config.yaml:ro
-      - loki-data:/loki
-    ports:
-      - "3100:3100"
-    command: -config.file=/etc/loki/local-config.yaml
-    networks:
-      - arb-net
-
-  promtail:
-    image: grafana/promtail:2.9.4
-    container_name: arb-promtail
-    restart: unless-stopped
-    volumes:
-      - ./monitoring/promtail.yml:/etc/promtail/config.yml:ro
-      - ./logs:/var/log/arb-bot:ro
-    command: -config.file=/etc/promtail/config.yml
-    depends_on:
-      - loki
-    networks:
-      - arb-net
-
+  # Reverse-proxy with Let's Encrypt.  nginx.conf mounts Solana-specific
+  # config that proxies the single upstream :8000 to the public subdomain.
   nginx:
     image: nginx:alpine
-    container_name: arb-nginx
+    container_name: solana-nginx
     restart: unless-stopped
+    profiles: ["proxy"]        # opt-in: docker compose --profile proxy up
     ports:
       - "80:80"
       - "443:443"
@@ -90,15 +56,46 @@ services:
       - ./certbot/www:/var/www/certbot:ro
     depends_on:
       - bot
-      - grafana
     networks:
-      - arb-net
+      - sol-net
+
+  # Optional observability stack — start with `--profile monitoring`.
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    container_name: solana-prometheus
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - sol-net
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: solana-grafana
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASS:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - sol-net
 
 volumes:
+  pg-data:
   prometheus-data:
   grafana-data:
-  loki-data:
 
 networks:
-  arb-net:
+  sol-net:
     driver: bridge

@@ -35,7 +35,7 @@ class _Counters:
     executions_not_included: int = 0
     total_expected_profit: float = 0.0
     total_actual_profit: float = 0.0
-    total_gas_used: int = 0
+    total_fee_paid_lamports: int = 0
     rejection_reasons: dict = field(default_factory=lambda: defaultdict(int))
     latencies_ms: list = field(default_factory=list)
 
@@ -75,7 +75,7 @@ class MetricsCollector:
         self,
         included: bool,
         reverted: bool,
-        gas_used: int = 0,
+        fee_paid_lamports: int = 0,
         actual_profit: float = 0.0,
     ) -> None:
         with self._lock:
@@ -86,7 +86,7 @@ class MetricsCollector:
                 self._c.executions_reverted += 1
             else:
                 self._c.executions_not_included += 1
-            self._c.total_gas_used += gas_used
+            self._c.total_fee_paid_lamports += fee_paid_lamports
 
     def record_expected_profit(self, profit: float) -> None:
         with self._lock:
@@ -136,7 +136,7 @@ class MetricsCollector:
                 "revert_rate_pct": round(revert_rate, 1),
                 "total_expected_profit": round(c.total_expected_profit, 8),
                 "total_actual_profit": round(c.total_actual_profit, 8),
-                "total_gas_used": c.total_gas_used,
+                "total_fee_paid_lamports": c.total_fee_paid_lamports,
                 "avg_latency_ms": round(avg_latency, 1),
                 "p95_latency_ms": round(p95_latency, 1),
             }

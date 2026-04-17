@@ -1,36 +1,47 @@
 {
-  "pair": "WETH/USDC",
-  "base_asset": "WETH",
+  "pair": "SOL/USDC",
+  "base_asset": "SOL",
   "quote_asset": "USDC",
-  "trade_size": 1.5,
-  "min_profit_base": 0.008,
-  "estimated_gas_cost_base": 0.002,
-  "flash_loan_fee_bps": 9.0,
-  "flash_loan_provider": "aave_v3",
-  "slippage_bps": 15.0,
-  "poll_interval_seconds": 0.5,
+  "trade_size": 1.0,
+  "min_profit_base": 0.0005,
+  "priority_fee_lamports": 10000,
+  "slippage_bps": 3.0,
+  "poll_interval_seconds": 1.0,
   "extra_pairs": [
-    { "pair": "WETH/USDT", "base_asset": "WETH", "quote_asset": "USDT", "trade_size": 1.5 },
-    { "pair": "WBTC/USDC", "base_asset": "WBTC", "quote_asset": "USDC", "trade_size": 0.05 }
-  ],
-  "dexes": [
     {
-      "name": "UniswapSim",
-      "base_price": 3008.0,
-      "fee_bps": 30.0,
-      "volatility_bps": 18.0
+      "pair": "USDC/USDT",
+      "base_asset": "USDC",
+      "quote_asset": "USDT",
+      "trade_size": 200.0,
+      "max_exposure": 2000.0
     },
     {
-      "name": "SushiSim",
-      "base_price": 3092.0,
-      "fee_bps": 30.0,
-      "volatility_bps": 22.0
+      "pair": "SOL/mSOL",
+      "base_asset": "SOL",
+      "quote_asset": "mSOL",
+      "trade_size": 1.0,
+      "max_exposure": 10.0
     },
     {
-      "name": "BalancerSim",
-      "base_price": 3045.0,
-      "fee_bps": 25.0,
-      "volatility_bps": 15.0
+      "pair": "SOL/jitoSOL",
+      "base_asset": "SOL",
+      "quote_asset": "jitoSOL",
+      "trade_size": 1.0,
+      "max_exposure": 10.0
+    },
+    {
+      "pair": "mSOL/USDC",
+      "base_asset": "mSOL",
+      "quote_asset": "USDC",
+      "trade_size": 1.0,
+      "max_exposure": 10.0
     }
+  ],
+  "venues": [
+    { "name": "Jupiter-Best",     "fee_bps": 0, "min_liquidity_usd": 100000 },
+    { "name": "Jupiter-Direct",   "fee_bps": 0, "min_liquidity_usd": 100000 },
+    { "name": "Raydium-SOL/USDC", "fee_bps": 25, "min_liquidity_usd": 250000 },
+    { "name": "Orca-SOL/USDC",    "fee_bps": 5,  "min_liquidity_usd": 250000 },
+    { "name": "Orca-USDC/USDT",   "fee_bps": 1,  "min_liquidity_usd": 250000 }
   ]
 }

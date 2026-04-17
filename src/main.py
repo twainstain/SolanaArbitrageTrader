@@ -1,4 +1,4 @@
-"""CLI entrypoint -- parses args, loads .env, selects market source, runs bot."""
+"""SolanaTrader CLI — parses args, loads .env, selects market source, runs bot."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ from core.env import (
     get_bot_iterations,
     get_bot_mode,
     get_bot_no_sleep,
-    get_rpc_overrides,
     load_env,
 )
 from observability.log import get_logger, setup_logging
@@ -22,26 +21,12 @@ logger = get_logger(__name__)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the CLI argument parser and load ``.env`` defaults.
-
-    Loads environment variables from ``.env`` (via ``load_env()``) before
-    constructing the parser so that default values can reference env vars.
-
-    The parser exposes:
-    * ``--config`` / ``--iterations`` / ``--no-sleep`` / ``--dry-run`` --
-      general run parameters whose defaults come from ``.env`` when the CLI
-      flag is not provided (resolved in ``main()``).
-    * ``--execute`` -- opt-in to real on-chain execution via ChainExecutor.
-    * ``--discover`` / ``--discover-chain`` / ``--discover-min-volume`` --
-      DexScreener-based live pair discovery.
-    * Market source group (mutually exclusive): ``--live``, ``--onchain``,
-      ``--subgraph``, ``--historical``.  Only one may be specified; if none
-      is given, ``_resolve_mode()`` falls back to the ``BOT_MODE`` env var
-      (default: simulated).
-    """
+    """Build the CLI argument parser and load ``.env`` defaults."""
     load_env()
 
-    parser = argparse.ArgumentParser(description="Run the Python arbitrage bot repro.")
+    parser = argparse.ArgumentParser(
+        description="Run the SolanaTrader arbitrage scanner.",
+    )
     parser.add_argument(
         "--config",
         default=None,
@@ -66,79 +51,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="Quote-only mode: log opportunities without executing trades.",
     )
     parser.add_argument(
-        "--execute",
+        "--execute-live",
         action="store_true",
-        help="Use ChainExecutor for real on-chain ERC-20 execution. "
-             "Requires EXECUTOR_PRIVATE_KEY and EXECUTOR_CONTRACT in .env. "
-             "Without this flag, PaperExecutor is always used (safe default).",
-    )
-    parser.add_argument(
-        "--discover",
-        action="store_true",
-        help="Query DexScreener at startup to discover live cross-DEX pairs. "
-             "Discovered pairs are passed directly to the bot.",
-    )
-    parser.add_argument(
-        "--discover-chain",
-        default=None,
-        help="Filter discovery to a specific chain (default: all chains).",
-    )
-    parser.add_argument(
-        "--discover-min-volume",
-        type=float,
-        default=50_000,
-        help="Minimum 24h volume for --discover (default: 50000).",
+        help="Enable real Solana transaction submission.  Requires "
+             "SOLANA_EXECUTION_ENABLED=true and SOLANA_WALLET_KEYPAIR_PATH in .env. "
+             "Prompts for confirmation before sending any tx.",
     )
 
     market_group = parser.add_mutually_exclusive_group()
     market_group.add_argument(
-        "--live",
+        "--jupiter",
         action="store_true",
-        help="Use LiveMarket (DeFi Llama aggregated prices per chain).",
+        help="Use SolanaMarket (Jupiter v6 quote API). Requires network access.",
     )
     market_group.add_argument(
-        "--onchain",
+        "--simulated",
         action="store_true",
-        help="Use OnChainMarket (web3.py RPC calls to DEX contracts).",
-    )
-    market_group.add_argument(
-        "--subgraph",
-        action="store_true",
-        help="Use SubgraphMarket (The Graph subgraph queries). Requires THEGRAPH_API_KEY.",
-    )
-    market_group.add_argument(
-        "--historical",
-        nargs="+",
-        metavar="FILE",
-        help="Use HistoricalMarket — replay downloaded JSON data files for backtesting.",
+        help="Use SimulatedMarket (deterministic synthetic quotes).",
     )
     return parser
 
 
 def _resolve_mode(args: argparse.Namespace) -> str:
-    """Determine the market data mode with a clear priority chain.
-
-    Resolution order (first match wins):
-
-    1. **CLI flag** -- ``--live``, ``--onchain``, ``--subgraph``, or
-       ``--historical`` explicitly set on the command line.
-    2. **Environment variable** -- ``BOT_MODE`` in ``.env`` (read by
-       ``get_bot_mode()``).  Accepted values: ``"live"``, ``"onchain"``,
-       ``"subgraph"``, ``"historical"``, ``"simulated"``.
-    3. **Default** -- ``"simulated"`` (returned by ``get_bot_mode()`` when
-       ``BOT_MODE`` is unset).
-
-    This ensures that one-off CLI invocations always override persistent env
-    config, while ``.env`` provides convenient defaults for repeated runs.
-    """
-    if args.live:
-        return "live"
-    if args.onchain:
-        return "onchain"
-    if args.subgraph:
-        return "subgraph"
-    if args.historical:
-        return "historical"
+    """Resolve market-data source.  CLI > env > default (simulated)."""
+    if args.jupiter:
+        return "jupiter"
+    if args.simulated:
+        return "simulated"
     return get_bot_mode()
 
 
@@ -147,7 +86,6 @@ def main() -> None:
     args = parser.parse_args()
     setup_logging()
 
-    # Apply .env defaults where CLI didn't provide a value.
     config_path = args.config or get_bot_config_path()
     iterations = args.iterations if args.iterations is not None else get_bot_iterations()
     dry_run = args.dry_run if args.dry_run else get_bot_dry_run()
@@ -156,67 +94,48 @@ def main() -> None:
     config = BotConfig.from_file(config_path)
     mode = _resolve_mode(args)
 
-    # --- Live pair discovery (passed directly to bot, not through config) ---
-    discovered_pairs = None
-    if args.discover:
-        from tools.pair_scanner import discover_pairs_for_bot
-
-        discovered_pairs = discover_pairs_for_bot(
-            chain=args.discover_chain,
-            min_volume=args.discover_min_volume,
-        )
-        if discovered_pairs:
-            logger.info("[discover] %d live pairs will be scanned", len(discovered_pairs))
-        else:
-            logger.info("[discover] No pairs discovered — falling back to config pairs")
-            discovered_pairs = None
-
     # --- Market source ---
     market = None
-    if mode == "live":
-        from market.live_market import LiveMarket
+    if mode == "jupiter":
+        from market.multi_venue_market import MultiVenueMarket
+        from market.solana_market import SolanaMarket
+        from market.raydium_market import RaydiumMarket
+        from market.orca_market import OrcaMarket
 
-        # Pass discovered pairs to LiveMarket so it can price ANY token.
-        market = LiveMarket(config, pairs=discovered_pairs)
-        logger.info("[mode] LIVE — fetching prices from DeFi Llama")
-    elif mode == "onchain":
-        from market.onchain_market import OnChainMarket
-
-        rpc = get_rpc_overrides()
-        market = OnChainMarket(config, rpc_overrides=rpc or None, pairs=discovered_pairs)
-        logger.info("[mode] ON-CHAIN — querying DEX contracts via RPC")
-    elif mode == "subgraph":
-        from market.subgraph_market import SubgraphMarket
-
-        market = SubgraphMarket(config)
-        logger.info("[mode] SUBGRAPH — querying The Graph for per-DEX pool prices")
-    elif mode == "historical":
-        from market.historical_market import HistoricalMarket
-
-        market = HistoricalMarket(config, data_files=args.historical)
-        iterations = min(iterations, market.total_ticks)
-        logger.info(
-            "[mode] HISTORICAL — replaying %d ticks from %d data file(s)",
-            market.total_ticks, len(args.historical),
-        )
+        market = MultiVenueMarket([
+            ("Jupiter", SolanaMarket(config)),
+            ("Raydium", RaydiumMarket()),
+            ("Orca",    OrcaMarket()),
+        ])
+        logger.info("[mode] MULTI-VENUE — Jupiter + Raydium + Orca (parallel)")
     else:
         logger.info("[mode] SIMULATED")
 
     # --- Executor ---
     executor = None
-    if args.execute:
-        if dry_run:
-            logger.warning("--execute and --dry-run both set — dry-run takes precedence, "
-                           "no real transactions will be sent.")
-        else:
-            from execution.chain_executor import ChainExecutor
+    if args.execute_live:
+        from execution.solana_executor import SolanaExecutor
 
-            executor = ChainExecutor(config)
-            logger.info("[executor] ON-CHAIN — real ERC-20 execution via FlashArbExecutor")
+        # Extra CLI-level gate: require the operator to type 'yes' on stdin.
+        # This is on top of the env-var gate inside SolanaExecutor.__init__.
+        print("\n" + "=" * 60)
+        print("  ⚠  LIVE SOLANA EXECUTION REQUESTED")
+        print("=" * 60)
+        print(f"  Config:        {config_path}")
+        print(f"  Primary pair:  {config.pair}   (size: {config.trade_size} {config.base_asset})")
+        print(f"  Min profit:    {config.min_profit_base} {config.base_asset}")
+        print(f"  Priority fee:  {config.priority_fee_lamports} lamports")
+        print("=" * 60)
+        confirmation = input("  Type 'yes' to enable LIVE execution: ").strip().lower()
+        if confirmation != "yes":
+            logger.error("Live execution NOT enabled (confirmation was %r)", confirmation)
+            return
+        executor = SolanaExecutor(config)    # raises if any safety gate fails
+        logger.warning("[executor] LIVE — wallet=%s", executor.wallet.pubkey)
     if executor is None:
-        logger.info("[executor] PAPER — simulated execution")
+        logger.info("[executor] PAPER — simulated execution (Phase 1/2)")
 
-    bot = ArbitrageBot(config, market=market, executor=executor, pairs=discovered_pairs)
+    bot = ArbitrageBot(config, market=market, executor=executor)
 
     def _handle_shutdown(signum, frame):
         sig_name = signal.Signals(signum).name

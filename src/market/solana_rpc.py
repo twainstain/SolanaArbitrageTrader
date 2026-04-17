@@ -1,0 +1,169 @@
+"""Shared Solana JSON-RPC client used by Raydium/Orca direct-pool adapters.
+
+Uses ``SOLANA_RPC_URL`` from the environment (default: Alchemy) and exposes
+a batched ``get_multiple_accounts`` that returns decoded account data for N
+pubkeys in a single round-trip.
+
+Design notes
+------------
+
+- ``getMultipleAccounts`` is the canonical Solana way to read many accounts
+  in one call.  Alchemy accepts up to 100 pubkeys per request.  We batch
+  larger inputs into chunks of 100.
+- Accounts are returned with ``data`` base64-encoded.  This module decodes
+  to raw ``bytes`` so adapters can parse the layout directly.
+- No caching here — the caller (market adapter) decides TTL.  Pool state
+  changes every slot, so most callers want fresh data every scan.
+- ``commitment: "processed"`` is used — lowest latency and sufficient for
+  quote freshness.  Phase 3 (execution) will switch to ``confirmed`` for
+  transaction submission reads.
+"""
+
+from __future__ import annotations
+
+import base64
+import logging
+import time
+from dataclasses import dataclass
+from typing import Any
+
+import requests
+
+from core.env import get_solana_rpc_urls
+
+logger = logging.getLogger(__name__)
+
+_MAX_PUBKEYS_PER_REQUEST = 100
+
+
+@dataclass(frozen=True)
+class AccountInfo:
+    """Decoded Solana account snapshot."""
+    pubkey: str
+    owner: str              # program ID that owns the account
+    lamports: int
+    data: bytes             # raw account data (base64-decoded)
+    slot: int = 0           # RPC context slot for this read
+
+
+class SolanaRPC:
+    """Thin HTTP client around Solana JSON-RPC.
+
+    Retries are deliberately minimal — scanner loops want fast failure so
+    we can skip a venue and move on.  The market adapter catches exceptions
+    per venue and continues.
+    """
+
+    def __init__(
+        self,
+        url: str | None = None,
+        timeout: float = 2.5,
+        commitment: str = "processed",
+    ) -> None:
+        if url is None:
+            urls = get_solana_rpc_urls()
+            url = urls[0] if urls else "https://api.mainnet-beta.solana.com"
+        self.url = url
+        self.timeout = timeout
+        self.commitment = commitment
+        self._session = requests.Session()
+        self._session.headers.update({
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        })
+        self._request_id = 0
+
+    # ------------------------------------------------------------------
+    # Low-level RPC
+    # ------------------------------------------------------------------
+
+    def _call(self, method: str, params: list[Any]) -> Any:
+        self._request_id += 1
+        payload = {
+            "jsonrpc": "2.0",
+            "id": self._request_id,
+            "method": method,
+            "params": params,
+        }
+        resp = self._session.post(self.url, json=payload, timeout=self.timeout)
+        resp.raise_for_status()
+        body = resp.json()
+        if "error" in body:
+            raise RuntimeError(f"Solana RPC error: {body['error']}")
+        return body.get("result")
+
+    # ------------------------------------------------------------------
+    # High-level helpers
+    # ------------------------------------------------------------------
+
+    def get_multiple_accounts(self, pubkeys: list[str]) -> list[AccountInfo | None]:
+        """Return decoded AccountInfo for each pubkey, or None if not found.
+
+        Batches inputs into chunks of 100 (Alchemy's per-request limit) and
+        stitches the result in original order.
+        """
+        if not pubkeys:
+            return []
+
+        out: list[AccountInfo | None] = []
+        for chunk_start in range(0, len(pubkeys), _MAX_PUBKEYS_PER_REQUEST):
+            chunk = pubkeys[chunk_start:chunk_start + _MAX_PUBKEYS_PER_REQUEST]
+            result = self._call(
+                "getMultipleAccounts",
+                [chunk, {"commitment": self.commitment, "encoding": "base64"}],
+            )
+            slot = (result or {}).get("context", {}).get("slot", 0)
+            values = (result or {}).get("value", [])
+            for pk, val in zip(chunk, values):
+                if val is None:
+                    out.append(None)
+                    continue
+                raw_b64 = val["data"][0] if isinstance(val["data"], list) else val["data"]
+                out.append(AccountInfo(
+                    pubkey=pk,
+                    owner=val.get("owner", ""),
+                    lamports=val.get("lamports", 0),
+                    data=base64.b64decode(raw_b64),
+                    slot=slot,
+                ))
+        return out
+
+    def get_slot(self) -> int:
+        """Current slot — useful for health checks."""
+        return int(self._call("getSlot", []))
+
+
+# ---------------------------------------------------------------------------
+# SPL Token Account decoding (Raydium uses SPL token vaults for reserves)
+# ---------------------------------------------------------------------------
+
+_SPL_TOKEN_ACCOUNT_LEN = 165
+
+
+def parse_spl_token_amount(data: bytes) -> int:
+    """Extract the ``amount`` field from an SPL Token Account's raw data.
+
+    SPL Token Account layout (spl-token v1, classic Token program):
+      0..32   mint                  (Pubkey)
+      32..64  owner                 (Pubkey)
+      64..72  amount                (u64 LE)        ← what we want
+      72..   (delegate, state, is_native, delegated_amount, close_authority)
+
+    Raises ValueError if the data is too short.
+    """
+    if len(data) < 72:
+        raise ValueError(f"SPL token account too short: {len(data)} bytes")
+    return int.from_bytes(data[64:72], "little", signed=False)
+
+
+def health_check() -> dict:
+    """Ping the configured RPC and return a tiny health summary."""
+    rpc = SolanaRPC()
+    t0 = time.monotonic()
+    slot = rpc.get_slot()
+    elapsed_ms = (time.monotonic() - t0) * 1000
+    return {
+        "url": rpc.url.rsplit("/", 1)[0] + "/…",  # hide API key in logs
+        "slot": slot,
+        "latency_ms": round(elapsed_ms, 1),
+    }

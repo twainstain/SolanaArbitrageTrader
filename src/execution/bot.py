@@ -1,4 +1,9 @@
-"""Main bot loop: fetch quotes -> evaluate strategy -> execute or log."""
+"""Main bot loop — fetch quotes → evaluate strategy → execute (paper) or log.
+
+Scanner-phase (Phase 1): the executor is always ``PaperExecutor`` unless
+the caller explicitly wires a real one.  Every scan cycle records per-
+stage latency via ``observability.latency_tracker``.
+"""
 
 from __future__ import annotations
 
@@ -21,8 +26,6 @@ from market.sim_market import SimulatedMarket
 from core.models import ZERO, ExecutionResult, MarketQuote, Opportunity
 from strategy import ArbitrageStrategy
 
-# Use fixed name "bot" (not __name__) so log capture works regardless of
-# whether this module is imported as "bot" or "execution.bot".
 logger = get_logger("bot")
 
 D = Decimal
@@ -53,8 +56,6 @@ class ArbitrageBot:
         self.strategy = strategy or ArbitrageStrategy(config, pairs=self._build_pair_list())
         self.executor: Executor = executor or PaperExecutor(config)
         self.dispatcher = dispatcher or AlertDispatcher()
-        # Pairs to scan — passed directly (e.g. from pair_scanner discovery)
-        # or falls back to config's primary pair + extra_pairs.
         self._shutdown_requested = False
 
     @staticmethod
@@ -64,20 +65,12 @@ class ArbitrageBot:
         return ""
 
     def request_shutdown(self) -> None:
-        """Signal the bot to stop after the current iteration completes."""
         self._shutdown_requested = True
         logger.info("Shutdown requested — will stop after current iteration")
 
     def _build_pair_list(self) -> list[PairConfig]:
-        """Build the list of pairs to scan each cycle.
-
-        Priority:
-          1. self._pairs if passed directly (e.g. from --discover)
-          2. config.extra_pairs + primary pair from config
-        """
         if self._pairs is not None:
             return list(self._pairs)
-
         result = [PairConfig(
             pair=self.config.pair,
             base_asset=self.config.base_asset,
@@ -89,23 +82,13 @@ class ArbitrageBot:
         return result
 
     @staticmethod
-    def _filter_outliers(quotes: list[MarketQuote], max_deviation: Decimal = D("0.03")) -> list[MarketQuote]:
-        """Remove quotes whose mid-price deviates more than max_deviation from the pair median.
-
-        Uses median (not mean) because median is robust to outliers — one garbage
-        quote won't skew the reference price. 3% threshold catches stale/thin pool
-        quotes (e.g. Sushi-Arbitrum returning $2231 when others show $2340 = 4.7%).
-        Real arbitrage spreads are typically <1%, so 3% is generous.
-        Per-pair filtering ensures bad data on one pair doesn't affect others.
-        """
+    def _filter_outliers(
+        quotes: list[MarketQuote], max_deviation: Decimal = D("0.03"),
+    ) -> list[MarketQuote]:
+        """Remove quotes whose mid-price deviates >max_deviation from the pair median."""
         by_pair: dict[str, list[MarketQuote]] = defaultdict(list)
         for q in quotes:
             by_pair[q.pair].append(q)
-
-        # Compute a GLOBAL median per pair across ALL chains/DEXes.
-        # This catches thin pools even when a chain has only 2 DEXes:
-        # if Sushi-Optimism returns $2161 but the global median is $2364,
-        # the 8.6% deviation gets it filtered.
         global_median: dict[str, Decimal] = {}
         for pair, pqs in by_pair.items():
             mids = [(q.buy_price + q.sell_price) / TWO for q in pqs]
@@ -117,12 +100,10 @@ class ArbitrageBot:
             if len(pqs) < 2:
                 filtered.extend(pqs)
                 continue
-
             median = global_median.get(pair, ZERO)
             if median == ZERO:
                 filtered.extend(pqs)
                 continue
-
             for q in pqs:
                 mid = (q.buy_price + q.sell_price) / TWO
                 deviation = abs(mid - median) / median
@@ -130,13 +111,13 @@ class ArbitrageBot:
                     filtered.append(q)
                 else:
                     logger.warning(
-                        "Outlier removed: %s on %s mid=$%.2f vs median=$%.2f (%.0f%% deviation)",
-                        q.pair, q.dex, float(mid), float(median), float(deviation * D("100")),
+                        "Outlier removed: %s on %s mid=%.6f vs median=%.6f (%.0f%% dev)",
+                        q.pair, q.venue, float(mid), float(median), float(deviation * D("100")),
                     )
         return filtered
 
     def run(
-        self, iterations: int = 10, sleep: bool = True, dry_run: bool = False
+        self, iterations: int = 10, sleep: bool = True, dry_run: bool = False,
     ) -> None:
         total_scans = 0
         opportunities_found = 0
@@ -160,18 +141,15 @@ class ArbitrageBot:
                 self.dispatcher.system_error("market", str(exc))
                 continue
 
-            # Filter outlier quotes: remove any quote whose mid-price deviates
-            # more than 50% from the median for that pair.  This catches bad data
-            # from low-liquidity pools (e.g. Sushi-Arbitrum returning $39 for WETH).
             quotes = self._filter_outliers(quotes)
 
-            # Find the best opportunity across all pairs.
             opportunity: Opportunity | None = None
             for pair_cfg in all_pairs:
                 pair_quotes = [q for q in quotes if q.pair == pair_cfg.pair]
                 if len(pair_quotes) < 2:
                     if index == 1 and pair_quotes:
-                        logger.debug("Skipping %s — only %d venue(s), need 2+", pair_cfg.pair, len(pair_quotes))
+                        logger.debug("Skipping %s — only %d venue(s), need 2+",
+                                     pair_cfg.pair, len(pair_quotes))
                     continue
                 candidate = self.strategy.find_best_opportunity(pair_quotes)
                 if candidate is not None and (
@@ -186,23 +164,21 @@ class ArbitrageBot:
                 log_scan(logger, index, quotes, None, decision)
             else:
                 opportunities_found += 1
-
                 self.dispatcher.opportunity_found(
                     pair=opportunity.pair,
-                    buy_dex=opportunity.buy_dex,
-                    sell_dex=opportunity.sell_dex,
+                    buy_dex=opportunity.buy_venue,
+                    sell_dex=opportunity.sell_venue,
                     spread_pct=float(opportunity.gross_spread_pct),
                     net_profit=float(opportunity.net_profit_base),
                 )
-
                 if dry_run:
                     decision = "dry_run_skip"
                     base_asset = self._base_asset_for_opportunity(opportunity) or self.config.base_asset
                     logger.info(
                         "[scan %d] %s buy on %s, sell on %s, "
-                        "size=%.4f %s, expected net=%.6f %s (dry-run)",
+                        "size=%.4f %s, expected net=%.8f %s (dry-run)",
                         index, opportunity.pair,
-                        opportunity.buy_dex, opportunity.sell_dex,
+                        opportunity.buy_venue, opportunity.sell_venue,
                         float(opportunity.trade_size), base_asset,
                         float(opportunity.net_profit_base), base_asset,
                     )
@@ -215,27 +191,18 @@ class ArbitrageBot:
                         total_realized_profit += result.realized_profit_base
                         base_asset = self._base_asset_for_opportunity(opportunity) or self.config.base_asset
                         logger.info(
-                            "[scan %d] %s buy on %s, sell on %s, "
-                            "size=%.4f %s, expected net=%.6f %s",
-                            index, opportunity.pair,
-                            opportunity.buy_dex, opportunity.sell_dex,
-                            float(opportunity.trade_size), base_asset,
-                            float(opportunity.net_profit_base), base_asset,
-                        )
-                        logger.info(
-                            "[exec %d] executed, realized profit=%.6f %s",
+                            "[exec %d] executed, realized profit=%.8f %s",
                             index, float(result.realized_profit_base), base_asset,
                         )
                         self.dispatcher.trade_executed(
                             pair=opportunity.pair,
-                            tx_hash=getattr(result, "tx_hash", "") or "paper",
+                            tx_hash=getattr(result, "signature", "") or "paper",
                             profit=float(result.realized_profit_base),
                         )
                     else:
                         decision = f"skipped:{result.reason}"
                         logger.info("[exec %d] skipped: %s", index, result.reason)
                         self.dispatcher.system_error("executor", result.reason)
-
                     log_scan(logger, index, quotes, opportunity, decision)
                     log_execution(logger, index, result)
 
@@ -244,11 +211,8 @@ class ArbitrageBot:
 
         mode = "DRY-RUN" if dry_run else "LIVE"
         logger.info(
-            "\n--- Summary (%s) ---\n"
-            "Scans: %d\n"
-            "Opportunities found: %d\n"
-            "Executed: %d\n"
-            "Total realized profit: %.6f %s",
+            "\n--- Summary (%s) ---\nScans: %d\nOpportunities found: %d\n"
+            "Executed: %d\nTotal realized profit: %.8f %s",
             mode, total_scans, opportunities_found, executed_count,
             float(total_realized_profit), self.config.base_asset,
         )

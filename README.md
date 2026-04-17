@@ -1,247 +1,128 @@
-# Arbitrage Bot
+# SolanaTrader
 
-A Python crypto arbitrage bot that detects cross-DEX price discrepancies and executes atomic flash-loan trades using ERC-20 tokens. Built following the [Dapp University video guide](https://www.youtube.com/watch?v=-PWyM6adiIE) and [ArbitrageScanner spec](docs/arbitrage_scanner_doc.md).
+A Python Solana arbitrage scanner built on the `trading_platform` shared
+library.  Phase 1 detects cross-venue arbitrage opportunities via the
+Jupiter aggregator quote API; live execution (Phase 3) will build and
+submit versioned transactions with a priority-fee + optional Jito tip.
+
+This repo was **converted in-place** from the EVM ArbitrageTrader product.
+The old EVM code lives under `_evm_legacy/` for reference.  See
+`docs/solana_migration_status.md` for the migration plan and phase map.
 
 ## How It Works
 
 ```
-1. DISCOVER    DexScreener finds cross-DEX pairs by volume (--discover)
-2. FETCH       Market source gets price quotes from each DEX on each chain
-3. FILTER      Outlier quotes removed (bad data from low-liquidity pools)
-4. EVALUATE    Strategy checks every buy-on-A / sell-on-B combination per pair
-5. RANK        Scanner scores by profit, liquidity, risk flags
-6. DECIDE      net profit > min threshold + no critical risk flags -> execute
-7. EXECUTE     Paper mode (simulated) or on-chain (FlashArbExecutor contract)
-8. LOG         Every quote, decision, and execution saved to logs/
+1. FETCH       Solana market source pulls quotes (Jupiter best + direct routes)
+2. FILTER      Outlier quotes removed (median-based per-pair deviation check)
+3. EVALUATE    Strategy checks every buy-on-A / sell-on-B venue combination
+4. RANK        Scanner scores by profit, liquidity, risk flags
+5. DECIDE      Net profit > min threshold + no critical risk flags → queue
+6. LOG         Every stage writes a latency sample to logs/latency.jsonl
 ```
 
-On-chain execution is atomic: flash loan -> swap A -> swap B -> repay -> keep profit. If profit drops below threshold, the entire transaction reverts (only gas is lost). Transactions are simulated via eth_call before sending to avoid wasting gas.
+Phase 1 is **scanner-only** — the pipeline's submitter slot is left unset,
+so approved opportunities land in `dry_run` terminal state.  Attempting to
+construct the `SolanaExecutor` raises `NotImplementedError` by design.
 
 ## Quick Start
 
 ```bash
-# Live pair discovery + scan across 12 chains (recommended)
-PYTHONPATH=src python -m main \
-    --config config/live_config.json --live --dry-run --no-sleep \
-    --iterations 3 --discover --discover-min-volume 100000
+# 1. install
+python3.11 -m pip install -r requirements.txt   # or use pyproject.toml
+cp .env.example .env                            # fill in Solana RPC/Jupiter
+git submodule update --init                     # trading_platform
 
-# Parse the results
-PYTHONPATH=src python -m log_parser --show-quotes
+# 2. smoke-test (deterministic, offline)
+PYTHONPATH=src:lib/trading_platform/src python3.11 -m main \
+    --config config/example_config.json --iterations 5 --dry-run
 
-# Performance report across all runs
-PYTHONPATH=src python -m perf_tracker
+# 3. live Jupiter scan (short run)
+PYTHONPATH=src:lib/trading_platform/src python3.11 -m main \
+    --config config/example_config.json --jupiter --iterations 10 --dry-run
 
-# Simulated market (no network needed)
-PYTHONPATH=src python -m main --iterations 5 --no-sleep
+# 4. production scanner loop (runs until SIGINT)
+./scripts/run_local.sh                          # live Jupiter
+./scripts/run_local.sh --sim                    # offline simulated
 
-# On-chain per-DEX quotes (Uniswap vs Sushi vs PancakeSwap)
-PYTHONPATH=src python -m main \
-    --config config/onchain_config.json --onchain --dry-run --no-sleep --iterations 1
-
-# Run tests
-PYTHONPATH=src python -m pytest tests/ -v
+# 5. readiness + tests
+PYTHONPATH=src:lib/trading_platform/src python3.11 scripts/check_readiness.py
+PYTHONPATH=src:lib/trading_platform/src python3.11 -m pytest tests/ -q
 ```
 
-## Architecture
+## Key Files
 
-```
-ArbitrageTrader/
-|-- config/                           # JSON configs for each mode
-|   |-- example_config.json           # Simulated (3 DEXs, random walk, 3 pairs)
-|   |-- live_config.json              # DeFi Llama (12 chains, 3 pairs)
-|   |-- onchain_config.json           # web3.py RPC (4 DEX+chain combos)
-|   |-- subgraph_config.json          # The Graph (2 DEXs)
-|   |-- historical_config.json        # Backtesting with downloaded data
-|   |-- uniswap_pancake_config.json   # Video's recommended DEX pair
-|   +-- multi_pair_config.json        # WETH/USDC + WETH/USDT + WBTC/USDC
-|-- contracts/
-|   +-- FlashArbExecutor.sol          # Solidity: atomic flash loan + ERC-20 swaps
-|-- src/
-|   |-- main.py                       # CLI entrypoint
-|   |-- bot.py                        # Scan loop + outlier filter
-|   |-- strategy.py                   # Cross-DEX evaluation with cost breakdown + risk flags
-|   |-- scanner.py                    # Multi-factor ranking + alerting
-|   |-- models.py                     # MarketQuote, Opportunity, ExecutionResult
-|   |-- config.py                     # BotConfig, DexConfig, PairConfig
-|   |
-|   |  -- Market Sources (pluggable, same interface) --
-|   |-- market.py                     # SimulatedMarket (multi-pair)
-|   |-- live_market.py                # DeFi Llama (multi-pair, discovered addresses)
-|   |-- onchain_market.py             # web3.py RPC (Uniswap/PancakeSwap/Sushi/Balancer)
-|   |-- subgraph_market.py            # The Graph per-DEX pool prices
-|   |-- historical_market.py          # Replay downloaded data
-|   |
-|   |  -- Executors --
-|   |-- executor.py                   # PaperExecutor (simulated)
-|   |-- chain_executor.py             # ChainExecutor (on-chain + tx simulation)
-|   |
-|   |  -- Tools --
-|   |-- pair_scanner.py               # DexScreener pair discovery + bot bridge
-|   |-- fork_scanner.py               # DeFiLlama fork/DEX discovery
-|   |-- event_listener.py             # Swap event poller
-|   |-- price_downloader.py           # Historical OHLC from The Graph
-|   |-- show_prices.py                # DeFi Llama prices + exchange info
-|   |-- log_parser.py                 # Parse and display JSONL logs
-|   |-- perf_tracker.py               # Phase 4 performance analytics
-|   |
-|   |  -- Infrastructure --
-|   |-- contracts.py                  # Contract addresses, ABIs, RPC URLs
-|   |-- subgraphs.py                  # Subgraph IDs, pool addresses, GraphQL queries
-|   |-- tokens.py                     # ERC-20 token addresses (12 chains)
-|   |-- env.py                        # .env loader
-|   +-- log.py                        # Logging: console + file + structured JSONL
-|-- tests/                            # 202 tests
-|-- logs/                             # Generated per run (.log + .jsonl)
-|-- data/                             # Downloaded price history
-+-- docs/                             # Research notes, video summaries, guides
-```
-
-## CLI Options
-
-| Flag | Description |
+| Path | Purpose |
 |---|---|
-| `--config FILE` | JSON config file (default: from .env) |
-| `--iterations N` | Number of scan cycles |
-| `--no-sleep` | Disable sleeping between scans |
-| `--dry-run` | Log opportunities without executing |
-| `--execute` | Real on-chain ERC-20 execution (requires wallet key) |
-| `--discover` | Query DexScreener for live cross-DEX pairs at startup |
-| `--discover-chain CHAIN` | Filter discovery to one chain (default: all) |
-| `--discover-min-volume N` | Min 24h volume for discovery (default: 50000) |
-| `--live` | DeFi Llama prices (12 chains) |
-| `--onchain` | web3.py RPC to DEX contracts |
-| `--subgraph` | The Graph per-DEX pool queries |
-| `--historical FILE [...]` | Replay downloaded JSON data |
+| `src/market/solana_market.py` | Jupiter v6 quote adapter |
+| `src/market/sim_market.py` | Deterministic synthetic market (tests + offline) |
+| `src/core/tokens.py` | SPL mint registry (SOL, USDC, USDT, mSOL, jitoSOL, bSOL) |
+| `src/core/venues.py` | Solana venue registry (Jupiter enabled, AMMs disabled in v1) |
+| `src/core/config.py` | `BotConfig` / `VenueConfig` / `PairConfig` loading |
+| `src/strategy/arb_strategy.py` | Cross-venue PnL math (fee / slippage / priority-fee) |
+| `src/strategy/scanner.py` | Ranking + liquidity gating + scan-history emission |
+| `src/risk/policy.py` | Rule-based risk engine (min profit, fee ratio, exposure, flags) |
+| `src/pipeline/lifecycle.py` | Candidate pipeline: detect → price → risk → (Phase 3: sim/submit/verify) |
+| `src/persistence/db.py` | SQLite / Postgres schema (Solana-native column names) |
+| `src/execution/executor.py` | `PaperExecutor` (scanner-phase default) |
+| `src/execution/solana_executor.py` | Phase-3 stub — refuses to construct |
+| `src/observability/latency_tracker.py` | Per-stage latency → `logs/latency.jsonl` |
+| `src/run_event_driven.py` | Production scanner loop (queue + consumer thread) |
 
-## Supported Chains (12)
+## Latency Observability
 
-| Chain | Token Registry | Live Config | RPC |
-|---|---|---|---|
-| Ethereum | WETH, WBTC, USDC, USDT | Yes | eth.llamarpc.com |
-| Arbitrum | WETH, WBTC, USDC, USDT | Yes | arb1.arbitrum.io/rpc |
-| Base | WETH, USDC | Yes | mainnet.base.org |
-| BSC | WETH, WBTC, USDC, USDT | Yes | bsc-dataseed.binance.org |
-| Polygon | WETH, WBTC, USDC, USDT | Yes | - |
-| Optimism | WETH, WBTC, USDC, USDT | Yes | - |
-| Avalanche | WETH, WBTC, USDC, USDT | Yes | - |
-| Fantom | WETH, USDC, USDT | Yes | - |
-| Linea | WETH, USDC | Yes | - |
-| Scroll | WETH, USDC | Yes | - |
-| zkSync | WETH, USDC | Yes | - |
-| Gnosis | WETH, USDC, USDT | Yes | - |
-
-## Supported DEXs
-
-Uniswap V3, PancakeSwap V3, SushiSwap V3, Balancer V2 (on-chain mode). Any DEX on DexScreener (live discovery mode).
-
-## Live Pair Discovery
-
-The `--discover` flag queries DexScreener at startup, searching 15 popular tokens for cross-DEX pairs. Discovered pairs carry their token contract addresses from DexScreener, so DeFi Llama can price ANY token -- not just the hardcoded registry.
+Every scan and every pipeline execution writes a JSON record to
+`logs/latency.jsonl`.  Per-scan fields include `rpc_fetch`, `scanner`.
+Per-pipeline fields include `detect_ms`, `price_ms`, `risk_ms`,
+`simulate_ms`, `total_ms`.
 
 ```bash
-# Discover + scan (all chains)
-PYTHONPATH=src python -m main \
-    --config config/live_config.json --live --dry-run --no-sleep \
-    --iterations 3 --discover
-
-# Discover on specific chain
-PYTHONPATH=src python -m main \
-    --config config/live_config.json --live --dry-run --no-sleep \
-    --iterations 3 --discover --discover-chain arbitrum
+# summary report (p50 / p95 / max per stage)
+PYTHONPATH=src:lib/trading_platform/src python3.11 -c \
+    "from observability.latency_tracker import analyze_latency; analyze_latency()"
 ```
 
-## Tools
+## Configuration
+
+`config/example_config.json` is the default Phase-1 config:
+
+- Primary pair: `SOL/USDC` — trade 1 SOL at a time
+- Extra pair: `USDC/USDT` — trade 200 USDC at a time (max exposure 2,000 USDC)
+- Venues: Jupiter-Best (multi-hop) + Jupiter-Direct (single-hop)
+- Priority fee: 10,000 lamports (~0.00001 SOL)
+- Slippage: 20 bps quoting tolerance
+- Min profit: 0.002 SOL (~$0.33 at SOL=$165)
+
+`config/prod_scan.json` raises the min profit, tightens venue liquidity
+floor, and increases trade size for a production scanning run.
+
+## Phase Map
+
+- [x] Phase 0/1 — repo conversion + scanner-only Solana ingestion (this commit)
+- [ ] Phase 2 — calibrate fee / slippage / liquidity thresholds with real data
+- [ ] Phase 3 — `SolanaExecutor` (tx build, preflight sim, submit, verify)
+- [ ] Phase 4 — readiness + rehearsal hardening
+- [ ] Phase 5 — narrow live rollout (1 pair, 1 venue, capped size)
+- [ ] Phase 6 — scale + optimization
+
+See `docs/solana_migration_status.md` for the full phase breakdown.
+
+## Testing
 
 ```bash
-# Pair scanner — find cross-DEX pairs
-PYTHONPATH=src python -m pair_scanner --recommended --chain ethereum
-PYTHONPATH=src python -m pair_scanner --token PEPE --min-volume 50000
-
-# Fork scanner — find Uniswap-style DEXes via DeFiLlama
-PYTHONPATH=src python -m fork_scanner --chain Ethereum --min-tvl 50000000
-
-# Event listener — real-time swap monitoring
-PYTHONPATH=src python -m event_listener --config config/uniswap_pancake_config.json --dry-run
-
-# Price downloader — historical data for backtesting
-PYTHONPATH=src python -m price_downloader --dex uniswap_v3 --chain ethereum --days 7 --output data/uni_7d.json
-
-# Show prices — DeFi Llama + exchange info
-PYTHONPATH=src python -m show_prices
-
-# Log parser — read any log file
-PYTHONPATH=src python -m log_parser --show-quotes
-PYTHONPATH=src python -m log_parser logs/bot_2026-04-13_04-47-27.jsonl --show-quotes
-
-# Performance tracker — analyze all runs
-PYTHONPATH=src python -m perf_tracker
-PYTHONPATH=src python -m perf_tracker --output data/perf_report.json
+PYTHONPATH=src:lib/trading_platform/src python3.11 -m pytest tests/ -q
 ```
 
-## On-Chain Execution
+Tests cover: SPL token registry, config loading, model coercion, sim
+market, Jupiter adapter (mocked), strategy PnL math, scanner ranking,
+risk policy, persistence (new Solana schema), pipeline scanner-only flow,
+latency tracker, executor stub.
 
-```bash
-# 1. Deploy contracts/FlashArbExecutor.sol
-# 2. Set in .env:
-#    EXECUTOR_PRIVATE_KEY=0x...
-#    EXECUTOR_CONTRACT=0x...
-# 3. Run (tx simulated via eth_call before sending):
-PYTHONPATH=src python -m main \
-    --config config/uniswap_pancake_config.json --onchain --execute
-```
+## Safety Posture
 
-## Safety Features
+Per `CLAUDE.md`:
 
-- **Outlier filter** — removes quotes with >50% deviation from median (catches bad data from low-liquidity pools)
-- **Transaction simulation** — eth_call dry-run before sending real tx
-- **Minimum profit threshold** — rejects opportunities below min_profit_base
-- **Risk flags** — low_liquidity, thin_market, stale_quote, high_fee_ratio
-- **Atomic execution** — contract reverts if profit < minProfit (only gas lost)
-- **Paper mode by default** — real execution requires explicit --execute flag
-
-## Logging
-
-Each run creates two files in `logs/`:
-
-| File | Content |
-|---|---|
-| `bot_*.log` | Human-readable console mirror |
-| `bot_*.jsonl` | Structured JSON: discovery, scan, execution, summary |
-
-Parse with: `PYTHONPATH=src python -m log_parser --show-quotes`
-
-## Running Tests
-
-```bash
-PYTHONPATH=src python -m pytest tests/ -v
-```
-
-202 tests covering: config, all 5 market sources, strategy, scanner, outlier filter, multi-pair, multi-chain, pair scanner, fork scanner, event listener, chain executor, price downloader, historical replay, performance tracker, and log parser.
-
-## Dependencies
-
-```bash
-pip install requests python-dotenv web3
-```
-
-## Design Alignment
-
-| Video Recommendation | Implementation |
-|---|---|
-| Choose one EVM chain | 12 chains supported |
-| Uniswap + PancakeSwap | Both + Sushi, Balancer |
-| Research pairs (DexScreener) | --discover flag, pair_scanner.py |
-| Flash-loan provider | Aave V3 + Balancer |
-| Smart contract executor | FlashArbExecutor.sol + chain_executor.py |
-| Event-driven searcher | event_listener.py |
-| Transaction simulation | eth_call before sending |
-| Track revert rate + PnL | perf_tracker.py |
-| Check DeFiLlama forks | fork_scanner.py |
-
-| Scanner Doc Requirement | Implementation |
-|---|---|
-| Cross-exchange spread scanner | strategy.py + scanner.py |
-| Risk/warning flags | low_liquidity, thin_market, stale_quote, high_fee_ratio |
-| Multi-factor ranking | profit + liquidity + flags + spread quality |
-| Alerting layer | scanner.py with configurable thresholds |
-| Fee and risk filter | Full cost breakdown on every opportunity |
+- **Capital preservation > profit** — no trade is better than a bad trade
+- **Default to simulation** — `PaperExecutor` is the only executor that can
+  be instantiated in Phase 1
+- **Never use float** — all financial math is `Decimal` or integer
+- **Never commit secrets, `data/`, or `logs/`**

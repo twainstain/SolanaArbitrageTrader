@@ -1,0 +1,23 @@
+{
+  "pair": "SOL/USDC",
+  "base_asset": "SOL",
+  "quote_asset": "USDC",
+  "trade_size": 2.0,
+  "min_profit_base": 0.005,
+  "priority_fee_lamports": 20000,
+  "slippage_bps": 15.0,
+  "poll_interval_seconds": 0.75,
+  "extra_pairs": [
+    {
+      "pair": "USDC/USDT",
+      "base_asset": "USDC",
+      "quote_asset": "USDT",
+      "trade_size": 500.0,
+      "max_exposure": 5000.0
+    }
+  ],
+  "venues": [
+    { "name": "Jupiter-Best",   "fee_bps": 0, "min_liquidity_usd": 250000 },
+    { "name": "Jupiter-Direct", "fee_bps": 0, "min_liquidity_usd": 250000 }
+  ]
+}

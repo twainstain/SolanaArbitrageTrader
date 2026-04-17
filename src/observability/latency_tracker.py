@@ -13,7 +13,7 @@ Usage:
     # ... queue wait ...
     tracker.mark("queue_wait")
     # ... pipeline ...
-    tracker.record_pipeline(opp_id, pair, chain, buy_dex, sell_dex, spread, timings)
+    tracker.record_pipeline(opp_id, pair, buy_venue, sell_venue, spread, timings)
     tracker.flush()  # write to file
 
 Analysis:
@@ -81,9 +81,8 @@ class LatencyTracker:
         self,
         opp_id: str,
         pair: str,
-        chain: str,
-        buy_dex: str,
-        sell_dex: str,
+        buy_venue: str,
+        sell_venue: str,
         spread_pct: float,
         net_profit: float,
         status: str,
@@ -108,9 +107,8 @@ class LatencyTracker:
                 "scan_index": self._scan.scan_index,
                 "opp_id": opp_id,
                 "pair": pair,
-                "chain": chain,
-                "buy_dex": buy_dex,
-                "sell_dex": sell_dex,
+                "buy_venue": buy_venue,
+                "sell_venue": sell_venue,
                 "spread_pct": round(spread_pct, 4),
                 "net_profit": round(net_profit, 8),
                 "status": status,
@@ -161,7 +159,7 @@ class LatencyTracker:
 def analyze_latency(filepath: str | Path | None = None) -> None:
     """Analyze latency.jsonl and print a summary report.
 
-    Shows: avg/p50/p95/max for each stage, per chain, per pair.
+    Shows: avg/p50/p95/max for each stage, per pair, per venue.
     """
     path = Path(filepath) if filepath else _LATENCY_FILE
     if not path.exists():
@@ -208,20 +206,20 @@ def analyze_latency(filepath: str | Path | None = None) -> None:
         mx = vals[-1]
         print(f"  {stage:<15s} {avg:>8.2f} {p50:>8.2f} {p95:>8.2f} {mx:>8.2f} {len(vals):>8d}")
 
-    # Per-chain breakdown.
-    print(f"\n  Per-Chain Pipeline Total (ms):")
-    print(f"  {'Chain':<15s} {'Avg':>8s} {'P95':>8s} {'Count':>8s}")
+    # Per-pair breakdown.
+    print(f"\n  Per-Pair Pipeline Total (ms):")
+    print(f"  {'Pair':<15s} {'Avg':>8s} {'P95':>8s} {'Count':>8s}")
     print(f"  {'-'*40}")
-    chain_totals: dict[str, list[float]] = defaultdict(list)
+    pair_totals: dict[str, list[float]] = defaultdict(list)
     for r in pipelines:
-        chain = r.get("chain", "?")
+        pair = r.get("pair", "?")
         total = r.get("pipeline_ms", {}).get("total_ms", 0)
-        chain_totals[chain].append(total)
-    for chain, vals in sorted(chain_totals.items(), key=lambda x: -len(x[1])):
+        pair_totals[pair].append(total)
+    for pair, vals in sorted(pair_totals.items(), key=lambda x: -len(x[1])):
         vals.sort()
         avg = sum(vals) / len(vals)
         p95 = vals[int(len(vals) * 0.95)]
-        print(f"  {chain:<15s} {avg:>8.2f} {p95:>8.2f} {len(vals):>8d}")
+        print(f"  {pair:<15s} {avg:>8.2f} {p95:>8.2f} {len(vals):>8d}")
 
     # Scan-level timings.
     if summaries:
@@ -241,7 +239,7 @@ def analyze_latency(filepath: str | Path | None = None) -> None:
     print(f"\n  Slowest Pipeline Executions:")
     slowest = sorted(pipelines, key=lambda r: r.get("pipeline_ms", {}).get("total_ms", 0), reverse=True)[:5]
     for r in slowest:
-        print(f"  {r.get('opp_id','?')[:16]}  chain={r.get('chain','?'):<10s}  "
+        print(f"  {r.get('opp_id','?')[:16]}  pair={r.get('pair','?'):<10s}  "
               f"total={r.get('pipeline_ms',{}).get('total_ms',0):.1f}ms  "
               f"spread={r.get('spread_pct',0):.2f}%")
 

@@ -7,8 +7,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Walk up from this file (src/env.py) to the project root.
-_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _ENV_PATH = _PROJECT_ROOT / ".env"
 
 
@@ -17,71 +16,47 @@ def load_env() -> None:
     load_dotenv(_ENV_PATH, override=False)
 
 
-def get_thegraph_api_key() -> str:
-    return os.environ.get("THEGRAPH_API_KEY", "")
+# ---------------------------------------------------------------------------
+# Solana RPC endpoints
+# ---------------------------------------------------------------------------
 
+def get_solana_rpc_urls() -> list[str]:
+    """Return Solana RPC URLs in priority order.
 
-def get_rpc_overrides() -> dict[str, str]:
-    """Return any custom RPC URLs from the environment.
-
-    Supports all 12 chains. Format: RPC_{CHAIN_UPPER}=https://...
+    Collects ``SOLANA_RPC_URL`` first, then ``SOLANA_RPC_URL_2``,
+    ``SOLANA_RPC_URL_3``, ... so operators can configure fallbacks
+    (e.g. Helius primary, Triton secondary, public mainnet-beta last).
     """
-    overrides: dict[str, str] = {}
-    for chain, env_var in (
-        ("ethereum", "RPC_ETHEREUM"),
-        ("arbitrum", "RPC_ARBITRUM"),
-        ("base", "RPC_BASE"),
-        ("bsc", "RPC_BSC"),
-        ("polygon", "RPC_POLYGON"),
-        ("optimism", "RPC_OPTIMISM"),
-        ("avax", "RPC_AVAX"),
-        ("fantom", "RPC_FANTOM"),
-        ("linea", "RPC_LINEA"),
-        ("scroll", "RPC_SCROLL"),
-        ("zksync", "RPC_ZKSYNC"),
-        ("gnosis", "RPC_GNOSIS"),
-    ):
-        url = os.environ.get(env_var, "")
-        if url:
-            overrides[chain] = url
-    return overrides
-
-
-_CHAIN_ENV_NAMES = (
-    ("ethereum", "RPC_ETHEREUM"),
-    ("arbitrum", "RPC_ARBITRUM"),
-    ("base", "RPC_BASE"),
-    ("bsc", "RPC_BSC"),
-    ("polygon", "RPC_POLYGON"),
-    ("optimism", "RPC_OPTIMISM"),
-    ("avax", "RPC_AVAX"),
-    ("fantom", "RPC_FANTOM"),
-    ("linea", "RPC_LINEA"),
-    ("scroll", "RPC_SCROLL"),
-    ("zksync", "RPC_ZKSYNC"),
-    ("gnosis", "RPC_GNOSIS"),
-)
-
-
-def get_rpc_urls_for_chain(chain: str) -> list[str]:
-    """Return all RPC URLs configured for a chain, in priority order.
-
-    Collects: RPC_{CHAIN}, RPC_{CHAIN}_2, RPC_{CHAIN}_3, ...
-    Falls back to PUBLIC_RPC_URLS if nothing is set.
-    """
-    env_prefix = f"RPC_{chain.upper()}"
     urls: list[str] = []
-    # Primary: RPC_OPTIMISM
-    primary = os.environ.get(env_prefix, "")
+    primary = os.environ.get("SOLANA_RPC_URL", "")
     if primary:
         urls.append(primary)
-    # Numbered fallbacks: RPC_OPTIMISM_2, RPC_OPTIMISM_3, ...
     for i in range(2, 10):
-        url = os.environ.get(f"{env_prefix}_{i}", "")
+        url = os.environ.get(f"SOLANA_RPC_URL_{i}", "")
         if url:
             urls.append(url)
     return urls
 
+
+def get_helius_api_key() -> str:
+    return os.environ.get("HELIUS_API_KEY", "")
+
+
+def get_jupiter_api_url() -> str:
+    """Return the Jupiter quote API base URL.
+
+    Default: public ``lite-api.jup.ag/swap/v1`` (free tier, rate-limited).
+    For the paid/pro tier override with ``JUPITER_API_URL=https://api.jup.ag/swap/v1``.
+
+    The legacy ``quote-api.jup.ag/v6`` was deprecated — DNS doesn't resolve
+    any more.  Do not use it.
+    """
+    return os.environ.get("JUPITER_API_URL", "https://lite-api.jup.ag/swap/v1")
+
+
+# ---------------------------------------------------------------------------
+# Bot run parameters
+# ---------------------------------------------------------------------------
 
 def get_bot_config_path() -> str:
     return os.environ.get("BOT_CONFIG", "config/example_config.json")
@@ -100,4 +75,5 @@ def get_bot_no_sleep() -> bool:
 
 
 def get_bot_mode() -> str:
+    """Active market source.  Allowed values: 'simulated' | 'jupiter'."""
     return os.environ.get("BOT_MODE", "simulated").lower()

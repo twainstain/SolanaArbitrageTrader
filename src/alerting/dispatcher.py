@@ -23,27 +23,19 @@ from trading_platform.alerting.dispatcher import (
 
 logger = logging.getLogger(__name__)
 
-# Block explorer base URLs per chain.
-BLOCK_EXPLORERS: dict[str, str] = {
-    "ethereum": "https://etherscan.io",
-    "arbitrum": "https://arbiscan.io",
-    "base": "https://basescan.org",
-    "optimism": "https://optimistic.etherscan.io",
-    "polygon": "https://polygonscan.com",
-    "bsc": "https://bscscan.com",
-    "avax": "https://snowtrace.io",
-    "scroll": "https://scrollscan.com",
-    "linea": "https://lineascan.build",
-    "zksync": "https://era.zksync.network",
-}
-
-DEFAULT_DASHBOARD_URL = "https://arb-trader.yeda-ai.com"
+# Solana block explorers.  Chain name is kept in the signature for
+# backward-compat but is ignored — all Solana txs use Solscan by default.
+SOLANA_EXPLORER = "https://solscan.io"
+DEFAULT_DASHBOARD_URL = "https://solana-arb-trader.yeda-ai.com"
 
 
-def tx_explorer_url(chain: str, tx_hash: str) -> str:
-    """Return a block explorer URL for a transaction hash."""
-    base = BLOCK_EXPLORERS.get(chain.lower(), "https://etherscan.io")
-    return f"{base}/tx/{tx_hash}"
+def tx_explorer_url(chain: str | None, signature: str) -> str:
+    """Return a Solscan URL for a Solana transaction signature.
+
+    ``chain`` is accepted but ignored to keep the legacy signature; every
+    tx on SolanaTrader is on Solana mainnet-beta.
+    """
+    return f"{SOLANA_EXPLORER}/tx/{signature}"
 
 
 def opp_dashboard_url(opp_id: str, dashboard_url: str = DEFAULT_DASHBOARD_URL) -> str:

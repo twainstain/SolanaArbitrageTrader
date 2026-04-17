@@ -1,7 +1,7 @@
-"""Per-DEX quote diagnostics collector.
+"""Per-venue quote diagnostics collector.
 
-Tracks success/failure/timeout/zero outcomes for each (dex, chain, pair)
-combination.  Thread-safe for use with OnChainMarket's ThreadPoolExecutor.
+Tracks success/failure/timeout/zero outcomes for each (venue, pair)
+combination.  Thread-safe.
 """
 
 from __future__ import annotations
@@ -44,14 +44,13 @@ class QuoteDiagnostics:
 
     def record(
         self,
-        dex: str,
-        chain: str,
+        venue: str,
         pair: str,
         outcome: QuoteOutcome,
         latency_ms: float = 0.0,
         error_msg: str = "",
     ) -> None:
-        key = f"{dex}:{chain}:{pair}"
+        key = f"{venue}:{pair}"
         rec = QuoteRecord(
             outcome=outcome,
             timestamp=time.time(),

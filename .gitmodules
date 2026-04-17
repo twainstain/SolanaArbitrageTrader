@@ -1,5 +1,5 @@
 [submodule "contracts/lib/forge-std"]
-	path = contracts/lib/forge-std
+	path = _evm_legacy/contracts/contracts/lib/forge-std
 	url = https://github.com/foundry-rs/forge-std
 [submodule "lib/trading_platform"]
 	path = lib/trading_platform

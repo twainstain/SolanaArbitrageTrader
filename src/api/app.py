@@ -184,6 +184,28 @@ def create_app(
     def funnel(user: str = Depends(_verify)) -> dict:
         return _repo().get_opportunity_funnel()
 
+    @app.get("/windows")
+    def windows(user: str = Depends(_verify)) -> dict:
+        """Return stats for every predefined time window (5m, 15m, 1h, ..., 1m).
+
+        Shape:
+            {
+              "5m":  {"opportunities": {...}, "trades": {...}, "profit": {...}},
+              "15m": {...},
+              ...
+            }
+
+        Backed by observability.time_windows.get_all_windows.
+        """
+        from observability.time_windows import get_all_windows
+        return get_all_windows(_repo().conn)
+
+    @app.get("/windows/{window_key}")
+    def window_single(window_key: str, user: str = Depends(_verify)) -> dict:
+        """Return stats for a single window key. Invalid keys get {'error': ...}."""
+        from observability.time_windows import get_windowed_stats
+        return get_windowed_stats(_repo().conn, window_key)
+
     @app.get("/wallet/balance")
     def wallet_balance(user: str = Depends(_verify)) -> dict:
         return get_wallet_balances()

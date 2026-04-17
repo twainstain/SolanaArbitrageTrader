@@ -176,3 +176,43 @@ class TestKillSwitch:
         assert r.status_code == 200
         assert r.json()["kill_switch_active"] is False
         assert not kill_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# /windows endpoints (multi-window activity feed for the dashboard).
+# ---------------------------------------------------------------------------
+
+
+class TestWindowsEndpoints:
+    def test_windows_returns_every_predefined_key(self, client):
+        r = client.get("/windows", auth=AUTH)
+        assert r.status_code == 200
+        body = r.json()
+        # Every window key from observability.time_windows.WINDOWS is present.
+        for key in ["5m", "15m", "1h", "4h", "8h", "24h", "3d", "1w", "1m"]:
+            assert key in body
+            # Each value has the expected top-level shape.
+            entry = body[key]
+            assert entry["window"] == key
+            assert "opportunities" in entry
+            assert "trades" in entry
+            assert "profit" in entry
+
+    def test_single_window_returns_stats(self, client):
+        r = client.get("/windows/1h", auth=AUTH)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["window"] == "1h"
+        assert "opportunities" in body
+        assert "trades" in body
+
+    def test_unknown_window_returns_error_field(self, client):
+        r = client.get("/windows/bogus", auth=AUTH)
+        assert r.status_code == 200
+        body = r.json()
+        assert "error" in body
+        assert "bogus" in body["error"]
+
+    def test_windows_requires_auth(self, client):
+        r = client.get("/windows")
+        assert r.status_code == 401

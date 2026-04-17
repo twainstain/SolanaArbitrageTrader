@@ -126,6 +126,13 @@ def render(repo: Repository, metrics=None, filters: dict | None = None) -> str:
       </table>
     """
 
+    # --- windowed activity (5m / 15m / 1h / 4h / 24h / 3d / 1w) --------
+    # Server-rendered so the page works without JS. One row per window
+    # key; columns mirror what the EVM dashboard showed: total / approved
+    # / rejected / executed / best-expected / realized.
+    from observability.time_windows import get_windowed_stats
+    windows_tbl = _render_windows_section(repo)
+
     # --- per-pair 24h funnel -------------------------------------------
     from observability.time_windows import get_pair_summary
     pair_rows_raw = get_pair_summary(repo.conn, window_key="24h")
@@ -177,6 +184,9 @@ def render(repo: Repository, metrics=None, filters: dict | None = None) -> str:
       <h2>Headline (all time)</h2>
       <div class='grid tight'>{headline}</div>
 
+      <h2>Windowed Activity</h2>
+      {windows_tbl}
+
       <h2>Hourly Win/Loss (24h)</h2>
       {hourly_tbl}
 
@@ -187,3 +197,64 @@ def render(repo: Repository, metrics=None, filters: dict | None = None) -> str:
       {opp_tbl}
     """
     return page("Dashboard", body, active="dashboard", refresh_seconds=10)
+
+
+# ---------------------------------------------------------------------------
+# Windowed-activity table (Phase 2d / ops request).
+#
+# Shows a single row per window key with consistent columns so operators
+# can eyeball 5m vs 1h vs 24h trends without clicking tabs. Pulls from
+# observability.time_windows.get_windowed_stats, which already powers the
+# /windows and /windows/{key} API endpoints.
+# ---------------------------------------------------------------------------
+
+
+# Ordered subset of WINDOWS to render in the table. Omits 8h and 1m to
+# keep the row count tight; users can still hit /windows/8h via the API.
+_RENDERED_WINDOWS: list[str] = ["5m", "15m", "1h", "4h", "24h", "3d", "1w"]
+
+
+def _render_windows_section(repo: Repository) -> str:
+    from observability.time_windows import get_windowed_stats
+
+    rows_html = []
+    for key in _RENDERED_WINDOWS:
+        data = get_windowed_stats(repo.conn, key)
+        opps = (data.get("opportunities") or {})
+        trades = (data.get("trades") or {})
+        profit = (data.get("profit") or {})
+        total = int(opps.get("total") or 0)
+        funnel = opps.get("funnel") or {}
+        approved = int(funnel.get("approved", 0)) + int(funnel.get("dry_run", 0)) + int(funnel.get("simulation_approved", 0))
+        rejected = int(funnel.get("rejected", 0))
+        executed = int(trades.get("total_trades") or 0)
+        realized = float(trades.get("total_profit") or 0.0)
+        best_exp = float(profit.get("max_expected_profit") or 0.0)
+
+        rows_html.append(
+            f"<tr>"
+            f"<td><code>{key}</code></td>"
+            f"<td class='num'>{total}</td>"
+            f"<td class='num positive'>{approved}</td>"
+            f"<td class='num'>{rejected}</td>"
+            f"<td class='num'>{executed}</td>"
+            f"<td class='num'>{best_exp:.6f}</td>"
+            f"<td class='num {'positive' if realized > 0 else ('negative' if realized < 0 else '')}'>"
+            f"{fmt_signed_sol(realized)}</td>"
+            f"</tr>"
+        )
+
+    return f"""
+      <table>
+        <thead><tr>
+          <th>Window</th>
+          <th class='num'>Opportunities</th>
+          <th class='num'>Approved</th>
+          <th class='num'>Rejected</th>
+          <th class='num'>Executed</th>
+          <th class='num'>Best Exp. SOL</th>
+          <th class='num'>Realized SOL</th>
+        </tr></thead>
+        <tbody>{"".join(rows_html)}</tbody>
+      </table>
+    """

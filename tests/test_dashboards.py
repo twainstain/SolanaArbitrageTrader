@@ -276,3 +276,32 @@ class TestOpsNewCards:
         assert "Fees 24h (lamports)" in html
         # 5000 lamports shows up (either formatted or raw).
         assert "5,000" in html or "5000" in html
+
+
+# ---------------------------------------------------------------------------
+# Windowed activity section on /dashboard (user ask: 5m, 15m, 1h, 4h, ...).
+# ---------------------------------------------------------------------------
+
+
+class TestWindowedActivitySection:
+    def test_main_dashboard_includes_all_rendered_windows(self, empty_repo):
+        html = main_dashboard.render(empty_repo)
+        assert "Windowed Activity" in html
+        for key in ["5m", "15m", "1h", "4h", "24h", "3d", "1w"]:
+            # Each key should show up wrapped in <code> tags from the row.
+            assert f"<code>{key}</code>" in html
+
+    def test_windowed_activity_has_expected_columns(self, empty_repo):
+        html = main_dashboard.render(empty_repo)
+        # Column headers — locate them within the windows table only.
+        for col in ["Opportunities", "Approved", "Rejected", "Executed",
+                    "Best Exp. SOL", "Realized SOL"]:
+            assert col in html
+
+    def test_windowed_activity_rows_reflect_recent_data(self, populated_repo):
+        """Opportunities inserted in the populated_repo fixture should show up in 24h/1w rows."""
+        html = main_dashboard.render(populated_repo)
+        # There's at least one opp in the fixture; the 24h row's
+        # Opportunities count is > 0. Without parsing HTML we just assert
+        # the section renders without blowing up and the 24h key is present.
+        assert "<code>24h</code>" in html

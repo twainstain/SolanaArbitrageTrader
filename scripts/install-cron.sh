@@ -28,11 +28,12 @@ if [[ "${1:-}" == "--remove" ]]; then
 fi
 
 # Append-or-replace: strip any existing solana-trader entries, then re-add.
-(crontab -l 2>/dev/null | grep -v "${MARKER}" ; cat <<EOF
-${BACKUP_JOB}    ${MARKER}
-${ANALYSIS_JOB}    ${MARKER}
-EOF
-) | crontab -
+# `crontab -l` exits non-zero on an empty crontab; `|| true` keeps pipefail
+# from aborting the subshell before the new entries are written.
+EXISTING="$(crontab -l 2>/dev/null | grep -v "${MARKER}" || true)"
+printf '%s\n%s    %s\n%s    %s\n' \
+    "${EXISTING}" "${BACKUP_JOB}" "${MARKER}" "${ANALYSIS_JOB}" "${MARKER}" \
+    | sed '/^$/d' | crontab -
 
 echo "Installed cron entries:"
 crontab -l | grep "${MARKER}"

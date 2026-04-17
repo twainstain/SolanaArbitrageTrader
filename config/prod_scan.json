@@ -7,6 +7,9 @@
   "priority_fee_lamports": 20000,
   "slippage_bps": 15.0,
   "poll_interval_seconds": 0.75,
+  "fast_poll_seconds": 0.25,
+  "near_hit_ratio": 0.5,
+  "adaptive_window": 30,
   "extra_pairs": [
     {
       "pair": "USDC/USDT",
@@ -14,6 +17,27 @@
       "quote_asset": "USDT",
       "trade_size": 500.0,
       "max_exposure": 5000.0
+    },
+    {
+      "pair": "SOL/jitoSOL",
+      "base_asset": "SOL",
+      "quote_asset": "jitoSOL",
+      "trade_size": 1.0,
+      "max_exposure": 10.0
+    },
+    {
+      "pair": "SOL/mSOL",
+      "base_asset": "SOL",
+      "quote_asset": "mSOL",
+      "trade_size": 1.0,
+      "max_exposure": 10.0
+    },
+    {
+      "pair": "mSOL/USDC",
+      "base_asset": "mSOL",
+      "quote_asset": "USDC",
+      "trade_size": 0.5,
+      "max_exposure": 5.0
     }
   ],
   "venues": [

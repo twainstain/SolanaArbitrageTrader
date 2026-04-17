@@ -23,6 +23,7 @@ from __future__ import annotations
 import base58
 import logging
 import time
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Iterable
 
@@ -34,6 +35,72 @@ from market.solana_rpc import AccountInfo, SolanaRPC, parse_spl_token_amount
 logger = logging.getLogger(__name__)
 
 D = Decimal
+
+
+# ---------------------------------------------------------------------------
+# CPMM swap-output simulation (Phase 2d).
+# Pure function so the math is trivially unit-testable without RPC mocks.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CpmmQuote:
+    """Result of a CPMM swap simulation at a specific input size."""
+    amount_in_human: Decimal
+    amount_out_human: Decimal
+    effective_price: Decimal         # amount_out / amount_in (quote per base if base→quote)
+    raw_midpoint: Decimal            # pre-fee quote_reserve / base_reserve
+    price_impact_bps: Decimal        # (midpoint - effective) / midpoint × 10000
+    fee_paid_human: Decimal          # fee in input-side units
+    base_to_quote: bool
+
+
+def cpmm_quote(
+    base_reserve: Decimal,
+    quote_reserve: Decimal,
+    fee_bps: Decimal | int,
+    amount_in: Decimal,
+    base_to_quote: bool = True,
+) -> CpmmQuote | None:
+    """Simulate a CPMM swap with Uniswap-v2 fee model (fee on input).
+
+    Reserves are in human units (pre-decimals). ``amount_in`` is the human
+    amount on the input side: base if ``base_to_quote`` else quote.
+
+    Returns None if the input is non-positive or reserves are empty.
+
+    Formula (fee taken from input, not output):
+        in_after_fee = amount_in × (1 - fee_bps/10000)
+        amount_out = R_out × in_after_fee / (R_in + in_after_fee)
+    """
+    if amount_in <= ZERO or base_reserve <= ZERO or quote_reserve <= ZERO:
+        return None
+
+    fee_decimal = D(fee_bps) / D("10000")
+    in_after_fee = amount_in * (D("1") - fee_decimal)
+    if base_to_quote:
+        r_in, r_out = base_reserve, quote_reserve
+        raw_mid = quote_reserve / base_reserve
+    else:
+        r_in, r_out = quote_reserve, base_reserve
+        raw_mid = base_reserve / quote_reserve
+
+    amount_out = (r_out * in_after_fee) / (r_in + in_after_fee)
+    effective_price = amount_out / amount_in if amount_in > ZERO else ZERO
+    # Price impact as bps of the pre-fee midpoint.
+    price_impact_bps = (
+        (raw_mid - effective_price) / raw_mid * D("10000")
+        if raw_mid > ZERO else ZERO
+    )
+    return CpmmQuote(
+        amount_in_human=amount_in,
+        amount_out_human=amount_out,
+        effective_price=effective_price,
+        raw_midpoint=raw_mid,
+        price_impact_bps=price_impact_bps,
+        fee_paid_human=amount_in * fee_decimal,
+        base_to_quote=base_to_quote,
+    )
 
 # LIQUIDITY_STATE_LAYOUT_V4 offsets — verified on-chain 2026-04-16.
 _BASE_VAULT_OFFSET = 336
@@ -71,6 +138,49 @@ class RaydiumMarket:
             return []
         self._ensure_vaults_resolved()
         return self._read_and_price()
+
+    def quote_at_size(
+        self,
+        pool_name: str,
+        amount_in: Decimal,
+        base_to_quote: bool = True,
+    ) -> CpmmQuote | None:
+        """Simulate a swap of ``amount_in`` through a specific pool.
+
+        Phase 2d upgrade over the half-fee midpoint used for scan-time
+        quotes: this computes the actual output with CPMM price impact
+        at the given trade size. Use this in the Pricing Agent stage
+        once the strategy has picked a candidate. Returns None if the
+        pool isn't registered, isn't resolved, or has empty reserves.
+        """
+        self._ensure_vaults_resolved()
+        pool = next((p for p in self._pools if p.name == pool_name), None)
+        if pool is None or not (pool.base_vault and pool.quote_vault):
+            return None
+        accounts = self.rpc.get_multiple_accounts(
+            [pool.base_vault, pool.quote_vault]
+        )
+        if len(accounts) != 2:
+            return None
+        base_acc, quote_acc = accounts
+        if base_acc is None or quote_acc is None:
+            return None
+        try:
+            base_raw = parse_spl_token_amount(base_acc.data)
+            quote_raw = parse_spl_token_amount(quote_acc.data)
+        except ValueError:
+            return None
+        base_tok = get_token(pool.base_symbol)
+        quote_tok = get_token(pool.quote_symbol)
+        base_reserve = D(base_raw) / (D(10) ** base_tok.decimals)
+        quote_reserve = D(quote_raw) / (D(10) ** quote_tok.decimals)
+        return cpmm_quote(
+            base_reserve=base_reserve,
+            quote_reserve=quote_reserve,
+            fee_bps=pool.fee_bps,
+            amount_in=amount_in,
+            base_to_quote=base_to_quote,
+        )
 
     # ------------------------------------------------------------------
     # Internals

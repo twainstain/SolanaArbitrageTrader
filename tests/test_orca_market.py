@@ -126,3 +126,108 @@ def test_orca_skips_missing_pool():
     rpc = MagicMock()
     rpc.get_multiple_accounts = MagicMock(return_value=[None])
     assert OrcaMarket(rpc=rpc, pools=[pool]).get_quotes() == []
+
+
+# ---------------------------------------------------------------------------
+# LST pool tests (Phase 2d): SOL/jitoSOL, SOL/mSOL, mSOL/USDC.
+# These exercise the equal-decimals code path (SOL:9 ↔ mSOL:9, SOL:9 ↔ jitoSOL:9)
+# and the cross-decimal path (mSOL:9 ↔ USDC:6).
+# ---------------------------------------------------------------------------
+
+
+def test_orca_sol_jitosol_decodes_lst_ratio():
+    """SOL/jitoSOL — same decimals, raw ratio = human price."""
+    sol = get_token("SOL")
+    jito = get_token("jitoSOL")
+    # jitoSOL historically trades below SOL (it's a staking derivative),
+    # so "jitoSOL per SOL" > 1. Use 1.14 as a plausible price.
+    sqrt_price = _q64_for_human_price(D("1.14"), sol.decimals, jito.decimals)
+    pool = PoolRef(
+        name="Orca-SOL/jitoSOL", venue="Orca", pair="SOL/jitoSOL",
+        base_symbol="SOL", quote_symbol="jitoSOL",
+        address="Hp53XEtt4S8SvPCXarsLSdGfZBuUr5mMmZmX2DRNXQKp",
+        program=ORCA_WHIRLPOOL_PROGRAM, fee_bps=1,
+    )
+    # 1bp fee tier → raw 100.
+    data = _whirlpool_data(sol.mint, jito.mint, sqrt_price, fee_rate=100)
+    rpc = MagicMock()
+    rpc.get_multiple_accounts = MagicMock(return_value=[
+        AccountInfo("Hp53XEtt4S8SvPCXarsLSdGfZBuUr5mMmZmX2DRNXQKp",
+                    ORCA_WHIRLPOOL_PROGRAM, 0, data),
+    ])
+    m = OrcaMarket(rpc=rpc, pools=[pool])
+    quotes = m.get_quotes()
+    assert len(quotes) == 1
+    q = quotes[0]
+    # 1bp fee → half-fee = 0.5bp = 0.00005 → effective = 1.14 × 0.99995 ≈ 1.139943
+    assert abs(q.buy_price - D("1.139943")) < D("0.001")
+    assert q.fee_bps == D("1")
+    assert q.fee_included is True
+    assert q.pair == "SOL/jitoSOL"
+
+
+def test_orca_sol_msol_decodes_lst_ratio():
+    """SOL/mSOL — same decimals. mSOL trades above SOL due to accrued rewards."""
+    sol = get_token("SOL")
+    msol = get_token("mSOL")
+    # mSOL accrues over time, so "mSOL per SOL" < 1. Use 0.87 (~15% rewards).
+    sqrt_price = _q64_for_human_price(D("0.87"), sol.decimals, msol.decimals)
+    pool = PoolRef(
+        name="Orca-SOL/mSOL", venue="Orca", pair="SOL/mSOL",
+        base_symbol="SOL", quote_symbol="mSOL",
+        address="HQcY5n2zP6rW74fyFEhWeBd3LnJpBcZechkvJpmdb8cx",
+        program=ORCA_WHIRLPOOL_PROGRAM, fee_bps=1,
+    )
+    data = _whirlpool_data(sol.mint, msol.mint, sqrt_price, fee_rate=100)
+    rpc = MagicMock()
+    rpc.get_multiple_accounts = MagicMock(return_value=[
+        AccountInfo("HQcY5n2zP6rW74fyFEhWeBd3LnJpBcZechkvJpmdb8cx",
+                    ORCA_WHIRLPOOL_PROGRAM, 0, data),
+    ])
+    m = OrcaMarket(rpc=rpc, pools=[pool])
+    quotes = m.get_quotes()
+    assert len(quotes) == 1
+    assert abs(quotes[0].buy_price - D("0.869957")) < D("0.001")
+    assert quotes[0].fee_bps == D("1")
+
+
+def test_orca_msol_usdc_decodes_cross_decimal():
+    """mSOL(9) / USDC(6) — exercises the 10^3 decimal-scaling code path."""
+    msol = get_token("mSOL")
+    usdc = get_token("USDC")
+    # mSOL ~ $103 (SOL price × mSOL/SOL ratio).
+    sqrt_price = _q64_for_human_price(D("103"), msol.decimals, usdc.decimals)
+    pool = PoolRef(
+        name="Orca-mSOL/USDC", venue="Orca", pair="mSOL/USDC",
+        base_symbol="mSOL", quote_symbol="USDC",
+        address="AiMZS5U3JMvpdvsr1KeaMiS354Z1DeSg5XjA4yYRxtFf",
+        program=ORCA_WHIRLPOOL_PROGRAM, fee_bps=30,
+    )
+    # 30bp fee tier → raw 3000.
+    data = _whirlpool_data(msol.mint, usdc.mint, sqrt_price, fee_rate=3000)
+    rpc = MagicMock()
+    rpc.get_multiple_accounts = MagicMock(return_value=[
+        AccountInfo("AiMZS5U3JMvpdvsr1KeaMiS354Z1DeSg5XjA4yYRxtFf",
+                    ORCA_WHIRLPOOL_PROGRAM, 0, data),
+    ])
+    m = OrcaMarket(rpc=rpc, pools=[pool])
+    quotes = m.get_quotes()
+    assert len(quotes) == 1
+    # 30bp half-fee = 15bp = 0.0015 → effective = 103 × 0.9985 ≈ 102.8455
+    assert abs(quotes[0].buy_price - D("102.8455")) < D("0.01")
+    assert quotes[0].fee_bps == D("30")
+    assert quotes[0].pair == "mSOL/USDC"
+
+
+def test_orca_lst_pools_registered_in_core_pools():
+    """Phase 2d acceptance: pools.py has the three LST entries."""
+    from core.pools import POOLS
+    names = {p.name for p in POOLS}
+    assert "Orca-SOL/jitoSOL" in names
+    assert "Orca-SOL/mSOL" in names
+    assert "Orca-mSOL/USDC" in names
+    # All three are wired to the Orca venue.
+    for p in POOLS:
+        if p.name.startswith("Orca-"):
+            assert p.venue == "Orca"
+            assert p.program == ORCA_WHIRLPOOL_PROGRAM

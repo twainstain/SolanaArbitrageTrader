@@ -138,7 +138,17 @@ def run(
     api_port: int | None = None,
 ) -> None:
     config = BotConfig.from_file(config_path)
-    sleep_s = sleep_seconds if sleep_seconds is not None else config.poll_interval_seconds
+    # Adaptive-poll controller: default-slow, downshift to fast_poll_seconds
+    # on any recent near-hit. CLI --sleep overrides both for debugging.
+    from core.adaptive_poll import AdaptivePoll
+    from decimal import Decimal as _Dec
+    adaptive = AdaptivePoll(
+        slow_seconds=config.poll_interval_seconds,
+        fast_seconds=config.fast_poll_seconds,
+        near_hit_ratio=config.near_hit_ratio,
+        window=config.adaptive_window,
+    )
+    override_sleep = sleep_seconds if sleep_seconds is not None else None
 
     db = init_db()
     repo = Repository(db)
@@ -188,8 +198,10 @@ def run(
     signal.signal(signal.SIGINT, _shutdown)
 
     logger.info(
-        "[loop] Starting scanner-only run: mode=%s pair=%s iterations=%s sleep=%.2fs",
-        mode, config.pair, iterations, sleep_s,
+        "[loop] Starting scanner-only run: mode=%s pair=%s iterations=%s "
+        "sleep_slow=%.2fs sleep_fast=%s",
+        mode, config.pair, iterations, config.poll_interval_seconds,
+        f"{config.fast_poll_seconds:.2f}s" if config.fast_poll_seconds else "off",
     )
     control = get_control()
     scan_count = 0
@@ -201,7 +213,7 @@ def run(
             # Pause gate — operator-triggered, via API or the kill-switch file.
             if control.paused:
                 logger.debug("[loop] paused — skipping scan %d", scan_count)
-                if stop.wait(sleep_s):
+                if stop.wait(override_sleep if override_sleep is not None else adaptive.current_interval()):
                     break
                 continue
 
@@ -211,7 +223,7 @@ def run(
             except Exception as exc:
                 logger.warning("[loop] market fetch failed: %s", exc)
                 dispatcher.system_error("market", str(exc))
-                if stop.wait(sleep_s):
+                if stop.wait(override_sleep if override_sleep is not None else adaptive.current_interval()):
                     break
                 continue
             # Venue / pair runtime disable — drop quotes we've been told
@@ -252,6 +264,19 @@ def run(
                 status=status,
             )
 
+            # Phase 2d: feed the best observed net profit to the adaptive
+            # poll controller so the next sleep downshifts on near-hits.
+            best_net: _Dec = _Dec("0")
+            for r in records:
+                try:
+                    np_val = _Dec(str(r.get("net_profit", 0)))
+                except Exception:
+                    continue
+                if np_val > best_net:
+                    best_net = np_val
+            adaptive.observe(best_net, config.min_profit_base)
+
+            sleep_s = override_sleep if override_sleep is not None else adaptive.current_interval()
             if stop.wait(sleep_s):
                 break
     finally:

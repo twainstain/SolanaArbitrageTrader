@@ -100,6 +100,52 @@ POOLS: list[PoolRef] = [
         program=ORCA_WHIRLPOOL_PROGRAM,
         fee_bps=1,
     ),
+    # Orca Whirlpool — SOL / jitoSOL (1bp tier, ~$31M TVL as of 2026-04-17)
+    # Deepest LST pool on Solana. Clean price-source for SOL-staking-discount arbs.
+    # Pool ordering: tokenA=SOL, tokenB=jitoSOL.
+    # https://solscan.io/account/Hp53XEtt4S8SvPCXarsLSdGfZBuUr5mMmZmX2DRNXQKp
+    PoolRef(
+        name="Orca-SOL/jitoSOL",
+        venue="Orca",
+        pair="SOL/jitoSOL",
+        base_symbol="SOL",
+        quote_symbol="jitoSOL",
+        address="Hp53XEtt4S8SvPCXarsLSdGfZBuUr5mMmZmX2DRNXQKp",
+        program=ORCA_WHIRLPOOL_PROGRAM,
+        fee_bps=1,
+    ),
+    # Orca Whirlpool — SOL / mSOL (1bp tier, ~$312k TVL as of 2026-04-17)
+    # Below the 500k TVL guideline but still viable for the scanner: reading
+    # a midpoint is fine, and 1-SOL trade-size price impact is ~0.03%. Gate
+    # execution size via min_liquidity_usd in the strategy.
+    # Pool ordering: tokenA=SOL, tokenB=mSOL.
+    # https://solscan.io/account/HQcY5n2zP6rW74fyFEhWeBd3LnJpBcZechkvJpmdb8cx
+    PoolRef(
+        name="Orca-SOL/mSOL",
+        venue="Orca",
+        pair="SOL/mSOL",
+        base_symbol="SOL",
+        quote_symbol="mSOL",
+        address="HQcY5n2zP6rW74fyFEhWeBd3LnJpBcZechkvJpmdb8cx",
+        program=ORCA_WHIRLPOOL_PROGRAM,
+        fee_bps=1,
+    ),
+    # Orca Whirlpool — mSOL / USDC (30bp tier, ~$100k TVL as of 2026-04-17)
+    # Thin but the only meaningful direct on-chain mSOL/USDC venue. Scanner
+    # midpoint is still informative even if un-executable; real trades on
+    # this pair should go through Jupiter aggregation. Watch for mint_order
+    # — pool orders tokenA=mSOL, tokenB=USDC.
+    # https://solscan.io/account/AiMZS5U3JMvpdvsr1KeaMiS354Z1DeSg5XjA4yYRxtFf
+    PoolRef(
+        name="Orca-mSOL/USDC",
+        venue="Orca",
+        pair="mSOL/USDC",
+        base_symbol="mSOL",
+        quote_symbol="USDC",
+        address="AiMZS5U3JMvpdvsr1KeaMiS354Z1DeSg5XjA4yYRxtFf",
+        program=ORCA_WHIRLPOOL_PROGRAM,
+        fee_bps=30,
+    ),
 ]
 
 

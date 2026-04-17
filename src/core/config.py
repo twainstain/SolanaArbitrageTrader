@@ -77,6 +77,12 @@ class BotConfig:
     poll_interval_seconds: float       # timing, not financial
     venues: list[VenueConfig]
     extra_pairs: list[PairConfig] | None = None
+    # Optional Phase-2d fast poll interval. When set (and < poll_interval_seconds),
+    # the loop downshifts to this interval whenever recent scans show a
+    # near-hit (see core.adaptive_poll.AdaptivePoll). None disables the feature.
+    fast_poll_seconds: float | None = None
+    near_hit_ratio: float = 0.5
+    adaptive_window: int = 30
 
     def __post_init__(self) -> None:
         for attr in ("trade_size", "min_profit_base", "slippage_bps"):
@@ -121,6 +127,13 @@ class BotConfig:
             poll_interval_seconds=float(data["poll_interval_seconds"]),
             venues=venues,
             extra_pairs=extra_pairs,
+            fast_poll_seconds=(
+                float(data["fast_poll_seconds"])
+                if "fast_poll_seconds" in data and data["fast_poll_seconds"] is not None
+                else None
+            ),
+            near_hit_ratio=float(data.get("near_hit_ratio", 0.5)),
+            adaptive_window=int(data.get("adaptive_window", 30)),
         )
         config.validate()
         return config
@@ -146,6 +159,12 @@ class BotConfig:
             raise ValueError("slippage_bps cannot be negative.")
         if self.priority_fee_lamports < 0:
             raise ValueError("priority_fee_lamports cannot be negative.")
+        if self.fast_poll_seconds is not None and self.fast_poll_seconds < 0:
+            raise ValueError("fast_poll_seconds cannot be negative.")
+        if self.near_hit_ratio < 0:
+            raise ValueError("near_hit_ratio cannot be negative.")
+        if self.adaptive_window <= 0:
+            raise ValueError("adaptive_window must be positive.")
         for venue in self.venues:
             if venue.fee_bps < ZERO or venue.fee_bps >= D("10000"):
                 raise ValueError(f"{venue.name}: fee_bps must be between 0 and 9999.")
